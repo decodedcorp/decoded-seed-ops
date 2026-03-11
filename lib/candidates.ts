@@ -24,7 +24,7 @@ type RawInstagramAccount = {
   name_ko: string | null;
   account_type: string | null;
 };
-type RawGroupMember = { group_id: string; artist_id: string };
+type RawGroupMember = { group_account_id: string; artist_account_id: string; is_active: boolean };
 
 type SourceSelectInput =
   | { mode: "alternative"; alternativeImageId: string }
@@ -677,19 +677,20 @@ export async function getGroupArtistOptionsForCandidate(candidateId: string): Pr
   if (selectedGroupAccount) {
     const { data: members, error: membersError } = await db
       .from("group_member")
-      .select("group_id,artist_id")
-      .eq("group_id", selectedGroupAccount.id);
+      .select("group_account_id,artist_account_id,is_active")
+      .eq("group_account_id", selectedGroupAccount.id)
+      .eq("is_active", true);
     if (membersError) {
       throw new ApiError(500, dbErrorMessage("group_member query failed", membersError));
+    } else {
+      const artistIds = ((members ?? []) as RawGroupMember[]).map((row) => row.artist_account_id);
+      const artistById = await fetchAccountsByIds(db, artistIds);
+      groupMemberArtistNames = artistIds
+        .map((id) => artistById.get(id))
+        .filter((v): v is RawInstagramAccount => Boolean(v))
+        .map((a) => accountDisplayName(a))
+        .filter((v): v is string => Boolean(v));
     }
-
-    const artistIds = ((members ?? []) as RawGroupMember[]).map((row) => row.artist_id);
-    const artistById = await fetchAccountsByIds(db, artistIds);
-    groupMemberArtistNames = artistIds
-      .map((id) => artistById.get(id))
-      .filter((v): v is RawInstagramAccount => Boolean(v))
-      .map((a) => accountDisplayName(a))
-      .filter((v): v is string => Boolean(v));
   }
 
   const artistCandidates = [...new Set([...groupMemberArtistNames, ...taggedArtistNames])];

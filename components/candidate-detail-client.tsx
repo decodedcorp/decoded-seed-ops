@@ -21,6 +21,7 @@ export function CandidateDetailClient({
   const [imageUrlInput, setImageUrlInput] = useState("");
   const [groupNameInput, setGroupNameInput] = useState(candidate.group_name ?? "");
   const [artistNameInput, setArtistNameInput] = useState(candidate.artist_name ?? "");
+  const [resolvedImageUrl, setResolvedImageUrl] = useState(candidate.image_url);
   const [uploadName, setUploadName] = useState("");
   const [uploadB64, setUploadB64] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,6 +39,9 @@ export function CandidateDetailClient({
       const json = await res.json();
       if (!json.ok) {
         throw new Error(json.error?.message || "Request failed");
+      }
+      if (json.data?.image_url && typeof json.data.image_url === "string") {
+        setResolvedImageUrl(json.data.image_url);
       }
       setMessage("성공했습니다. 최신 상태를 반영하려면 새로고침하세요.");
     } catch (error) {
@@ -156,6 +160,12 @@ export function CandidateDetailClient({
       </div>
 
       <h3>Step2) 이미지 확보 (아래 옵션 중 하나 선택)</h3>
+      <p>
+        현재 확정 이미지 URL:{" "}
+        <a href={resolvedImageUrl} target="_blank" rel="noreferrer">
+          {resolvedImageUrl}
+        </a>
+      </p>
       <h4>옵션1) Image URL ingest (scontent 링크 -&gt; ops-seed 저장)</h4>
       <div className="row">
         <input
