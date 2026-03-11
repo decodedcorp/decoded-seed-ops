@@ -7,11 +7,20 @@ import type { AlternativeImage, SeedLook } from "@/types";
 type Props = {
   candidate: SeedLook;
   alternatives: AlternativeImage[];
+  groupCandidates: string[];
+  artistCandidates: string[];
 };
 
-export function CandidateDetailClient({ candidate, alternatives }: Props) {
+export function CandidateDetailClient({
+  candidate,
+  alternatives,
+  groupCandidates,
+  artistCandidates,
+}: Props) {
   const [urlInput, setUrlInput] = useState(candidate.source_url ?? "");
   const [imageUrlInput, setImageUrlInput] = useState("");
+  const [groupNameInput, setGroupNameInput] = useState(candidate.group_name ?? "");
+  const [artistNameInput, setArtistNameInput] = useState(candidate.artist_name ?? "");
   const [uploadName, setUploadName] = useState("");
   const [uploadB64, setUploadB64] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,6 +65,40 @@ export function CandidateDetailClient({ candidate, alternatives }: Props) {
           {candidate.image_url}
         </a>
       </p>
+      <p>Group: {candidate.group_name || "-"}</p>
+      <p>Artist: {candidate.artist_name || "-"}</p>
+
+      <h3>Step0) Group/Artist 확정</h3>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <select value={groupNameInput} onChange={(event) => setGroupNameInput(event.target.value)}>
+          <option value="">(group 미선택)</option>
+          {groupCandidates.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select value={artistNameInput} onChange={(event) => setArtistNameInput(event.target.value)}>
+          <option value="">(artist 미선택)</option>
+          {artistCandidates.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={busy}
+          onClick={() =>
+            request(`/api/candidates/${candidate.id}/source/select`, {
+              mode: "group_artist",
+              groupName: groupNameInput || null,
+              artistName: artistNameInput || null,
+            })
+          }
+        >
+          Group/Artist 저장
+        </button>
+      </div>
 
       <h3>Alternative images (with_items=false)</h3>
       {alternatives.length === 0 ? (

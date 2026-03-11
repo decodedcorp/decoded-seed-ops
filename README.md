@@ -2,6 +2,9 @@
 
 `decoded-seed-ops` is an ops dashboard MVP for building/curating cold-start candidates, filling source, and running review workflows.
 
+This app does not run backend reflection/export. n8n workflows own downstream processing:
+`Sync -> Ops Dashboard manual review -> Spotter -> Solver`.
+
 ## Stack
 
 - Next.js App Router
@@ -102,6 +105,7 @@ or
 ## Notes
 
 - Backend reflection/export is handled by n8n server, not this app.
+- Seed target tables are `seed_posts`, `seed_asset`, `seed_spots`, `seed_solutions`.
 - Seed DB and backend DB are separated. No cross-DB FK assumptions.
 - `backend_*_id` fields are reference IDs only.
 - Candidate build rule follows:

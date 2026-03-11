@@ -35,9 +35,9 @@
 
 seed 테이블은 backend 계약(`posts/spots/solutions`)에 맞춰 설계하되, review 컬럼을 중심으로 운영한다.
 
-- `seed_look` -> backend `posts` 대응
-- `seed_item` -> backend `spots` 대응
-- `seed_solution` -> backend `solutions` 대응
+- `seed_posts` -> backend `posts` 대응
+- `seed_spots` -> backend `spots` 대응
+- `seed_solutions` -> backend `solutions` 대응
 - `seed_asset` -> source provenance + archived image
 
 주의:

@@ -8,6 +8,11 @@ const bodySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("alternative"), alternativeImageId: z.string().uuid() }),
   z.object({ mode: z.literal("url"), sourceUrl: z.string().url() }),
   z.object({
+    mode: z.literal("group_artist"),
+    groupName: z.string().min(1).nullable(),
+    artistName: z.string().min(1).nullable(),
+  }),
+  z.object({
     mode: z.literal("image_url"),
     imageUrl: z.string().url(),
     sourceUrl: z.string().url().optional(),

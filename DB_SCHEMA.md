@@ -9,8 +9,8 @@
   - 핵심 테이블: `post`, `image`, `post_image`, `item`
 - `seed` 계층 (ops 대시보드 대상)
   - source 확정/검수(승인·반려)용 데이터
-  - 핵심 테이블: `seed_look`, `seed_asset`, `seed_item`, `seed_solution`
-  - backend 대응: `posts <- seed_look`, `spots <- seed_item`, `solutions <- seed_solution`
+  - 핵심 테이블: `seed_posts`, `seed_asset`, `seed_spots`, `seed_solutions`
+  - backend 대응: `posts <- seed_posts`, `spots <- seed_spots`, `solutions <- seed_solutions`
   - backend 반영(write)은 ops-dashboard가 아닌 n8n 서버 담당
 
 ## 2) 필수 선행 조건
@@ -79,12 +79,12 @@ where pi.post_id = :post_id
 
 ## 7) backend 매핑 기준
 
-- `seed_look` -> `posts`
+- `seed_posts` -> `posts`
   - 핵심 필드: `image_url`, `media_type`, `title`, `group_name`, `artist_name`, `context`, `status`
-- `seed_item` -> `spots`
-  - 핵심 필드: `look_id`(to `post_id`), `position_left`, `position_top`, `subcategory_id`, `status`
-- `seed_solution` -> `solutions`
-  - 핵심 필드: `item_id`(to `spot_id`), `title`, `original_url`, `affiliate_url`, `thumbnail_url`, `status`
+- `seed_spots` -> `spots`
+  - 핵심 필드: `post_id`, `position_left`, `position_top`, `subcategory_id`, `status`
+- `seed_solutions` -> `solutions`
+  - 핵심 필드: `spot_id`, `title`, `original_url`, `affiliate_url`, `thumbnail_url`, `status`
 
 주의:
 - `seed`와 `backend`가 서로 다른 DB라면 FK를 걸 수 없다.

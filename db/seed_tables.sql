@@ -1,5 +1,5 @@
--- Backend-aligned seed tables for curated cold-start data.
--- Contract target: public.posts / public.spots / public.solutions
+-- Warehouse seed tables for curated cold-start data.
+-- Canonical tables: public.seed_posts / public.seed_spots / public.seed_solutions
 -- Design principle:
 -- 1) Keep backend-compatible columns in seed tables.
 -- 2) Add ops-only columns for review/export workflow.
@@ -29,7 +29,7 @@ begin
   end if;
 end $$;
 
-create table if not exists public.seed_look (
+create table if not exists public.seed_posts (
   id uuid not null default gen_random_uuid(),
   backend_post_id uuid null,
   source_post_id uuid null,
@@ -62,34 +62,34 @@ create table if not exists public.seed_look (
   metadata jsonb null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
-  constraint seed_look_pkey primary key (id),
-  constraint seed_look_backend_post_id_key unique (backend_post_id)
+  constraint seed_posts_pkey primary key (id),
+  constraint seed_posts_backend_post_id_key unique (backend_post_id)
 ) tablespace pg_default;
 
-create index if not exists idx_seed_look_review_status
-  on public.seed_look using btree (review_status) tablespace pg_default;
+create index if not exists idx_seed_posts_review_status
+  on public.seed_posts using btree (review_status) tablespace pg_default;
 
-create index if not exists idx_seed_look_ready_for_backend
-  on public.seed_look using btree (ready_for_backend) tablespace pg_default;
+create index if not exists idx_seed_posts_ready_for_backend
+  on public.seed_posts using btree (ready_for_backend) tablespace pg_default;
 
-create index if not exists idx_seed_look_source_type
-  on public.seed_look using btree (source_type) tablespace pg_default;
+create index if not exists idx_seed_posts_source_type
+  on public.seed_posts using btree (source_type) tablespace pg_default;
 
-create index if not exists idx_seed_look_source_post_id
-  on public.seed_look using btree (source_post_id) tablespace pg_default;
+create index if not exists idx_seed_posts_source_post_id
+  on public.seed_posts using btree (source_post_id) tablespace pg_default;
 
-create index if not exists idx_seed_look_created_at
-  on public.seed_look using btree (created_at) tablespace pg_default;
+create index if not exists idx_seed_posts_created_at
+  on public.seed_posts using btree (created_at) tablespace pg_default;
 
-create index if not exists idx_seed_look_status
-  on public.seed_look using btree (status) tablespace pg_default;
+create index if not exists idx_seed_posts_status
+  on public.seed_posts using btree (status) tablespace pg_default;
 
-create index if not exists idx_seed_look_user_id
-  on public.seed_look using btree (user_id) tablespace pg_default;
+create index if not exists idx_seed_posts_user_id
+  on public.seed_posts using btree (user_id) tablespace pg_default;
 
 create table if not exists public.seed_asset (
   id uuid not null default gen_random_uuid(),
-  look_id uuid not null,
+  post_id uuid not null,
   source_type public.seed_source_type not null default 'instagram'::seed_source_type,
   source_url text null,
   source_domain text null,
@@ -109,8 +109,8 @@ create table if not exists public.seed_asset (
   updated_at timestamp with time zone not null default now(),
   constraint seed_asset_pkey primary key (id),
   constraint seed_asset_image_hash_key unique (image_hash),
-  constraint seed_asset_look_id_fkey
-    foreign key (look_id) references public.seed_look (id) on delete cascade
+  constraint seed_asset_post_id_fkey
+    foreign key (post_id) references public.seed_posts (id) on delete cascade
 ) tablespace pg_default;
 
 create index if not exists idx_seed_asset_source_type
@@ -119,9 +119,9 @@ create index if not exists idx_seed_asset_source_type
 create index if not exists idx_seed_asset_captured_at
   on public.seed_asset using btree (captured_at) tablespace pg_default;
 
-create table if not exists public.seed_item (
+create table if not exists public.seed_spots (
   id uuid not null default gen_random_uuid(),
-  look_id uuid not null,
+  post_id uuid not null,
   backend_spot_id uuid null,
   source_image_id uuid null,
   user_id uuid null,
@@ -138,30 +138,30 @@ create table if not exists public.seed_item (
   metadata jsonb null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
-  constraint seed_item_pkey primary key (id),
-  constraint seed_item_backend_spot_id_key unique (backend_spot_id),
-  constraint seed_item_look_id_fkey
-    foreign key (look_id) references public.seed_look (id) on delete cascade
+  constraint seed_spots_pkey primary key (id),
+  constraint seed_spots_backend_spot_id_key unique (backend_spot_id),
+  constraint seed_spots_post_id_fkey
+    foreign key (post_id) references public.seed_posts (id) on delete cascade
 ) tablespace pg_default;
 
-create index if not exists idx_seed_item_look_id
-  on public.seed_item using btree (look_id) tablespace pg_default;
+create index if not exists idx_seed_spots_post_id
+  on public.seed_spots using btree (post_id) tablespace pg_default;
 
-create index if not exists idx_seed_item_user_id
-  on public.seed_item using btree (user_id) tablespace pg_default;
+create index if not exists idx_seed_spots_user_id
+  on public.seed_spots using btree (user_id) tablespace pg_default;
 
-create index if not exists idx_seed_item_status
-  on public.seed_item using btree (status) tablespace pg_default;
+create index if not exists idx_seed_spots_status
+  on public.seed_spots using btree (status) tablespace pg_default;
 
-create index if not exists idx_seed_item_review_status
-  on public.seed_item using btree (review_status) tablespace pg_default;
+create index if not exists idx_seed_spots_review_status
+  on public.seed_spots using btree (review_status) tablespace pg_default;
 
-create index if not exists idx_seed_item_ready_for_backend
-  on public.seed_item using btree (ready_for_backend) tablespace pg_default;
+create index if not exists idx_seed_spots_ready_for_backend
+  on public.seed_spots using btree (ready_for_backend) tablespace pg_default;
 
-create table if not exists public.seed_solution (
+create table if not exists public.seed_solutions (
   id uuid not null default gen_random_uuid(),
-  item_id uuid not null,
+  spot_id uuid not null,
   backend_solution_id uuid null,
   user_id uuid null,
   match_type character varying null,
@@ -195,29 +195,29 @@ create table if not exists public.seed_solution (
   export_error text null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
-  constraint seed_solution_pkey primary key (id),
-  constraint seed_solution_backend_solution_id_key unique (backend_solution_id),
-  constraint seed_solution_item_id_fkey
-    foreign key (item_id) references public.seed_item (id) on delete cascade
+  constraint seed_solutions_pkey primary key (id),
+  constraint seed_solutions_backend_solution_id_key unique (backend_solution_id),
+  constraint seed_solutions_spot_id_fkey
+    foreign key (spot_id) references public.seed_spots (id) on delete cascade
 ) tablespace pg_default;
 
-create index if not exists idx_seed_solution_item_id
-  on public.seed_solution using btree (item_id) tablespace pg_default;
+create index if not exists idx_seed_solutions_spot_id
+  on public.seed_solutions using btree (spot_id) tablespace pg_default;
 
-create index if not exists idx_seed_solution_user_id
-  on public.seed_solution using btree (user_id) tablespace pg_default;
+create index if not exists idx_seed_solutions_user_id
+  on public.seed_solutions using btree (user_id) tablespace pg_default;
 
-create index if not exists idx_seed_solution_match_type
-  on public.seed_solution using btree (match_type) tablespace pg_default;
+create index if not exists idx_seed_solutions_match_type
+  on public.seed_solutions using btree (match_type) tablespace pg_default;
 
-create index if not exists idx_seed_solution_is_verified
-  on public.seed_solution using btree (is_verified) tablespace pg_default;
+create index if not exists idx_seed_solutions_is_verified
+  on public.seed_solutions using btree (is_verified) tablespace pg_default;
 
-create index if not exists idx_seed_solution_is_adopted
-  on public.seed_solution using btree (is_adopted) tablespace pg_default;
+create index if not exists idx_seed_solutions_is_adopted
+  on public.seed_solutions using btree (is_adopted) tablespace pg_default;
 
-create index if not exists idx_seed_solution_review_status
-  on public.seed_solution using btree (review_status) tablespace pg_default;
+create index if not exists idx_seed_solutions_review_status
+  on public.seed_solutions using btree (review_status) tablespace pg_default;
 
-create index if not exists idx_seed_solution_ready_for_backend
-  on public.seed_solution using btree (ready_for_backend) tablespace pg_default;
+create index if not exists idx_seed_solutions_ready_for_backend
+  on public.seed_solutions using btree (ready_for_backend) tablespace pg_default;
