@@ -4,6 +4,7 @@ export type SeedLook = {
   id: string;
   source_post_id: string | null;
   source_with_items_image_id: string | null;
+  group_name: string | null;
   image_url: string;
   title: string | null;
   source_url: string | null;

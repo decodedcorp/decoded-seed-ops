@@ -9,12 +9,13 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const statusParam = (searchParams.get("status") || "draft") as ReviewStatus;
+    const accountParam = searchParams.get("account") || undefined;
 
     if (!allowedStatuses.has(statusParam)) {
       return failure("INVALID_STATUS", "status must be draft|approved|rejected", 400);
     }
 
-    const candidates = await getCandidatesByStatus(statusParam);
+    const candidates = await getCandidatesByStatus(statusParam, accountParam);
     return success({ candidates });
   } catch (error) {
     const apiError = toApiError(error);

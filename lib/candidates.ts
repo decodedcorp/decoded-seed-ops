@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { ApiError } from "@/lib/errors";
 import { getServerEnv } from "@/lib/env";
 import { getServerSupabase } from "@/lib/supabase/server";
@@ -14,6 +16,7 @@ type DbErrorLike = { message: string; code?: string; details?: string; hint?: st
 type SourceSelectInput =
   | { mode: "alternative"; alternativeImageId: string }
   | { mode: "url"; sourceUrl: string }
+  | { mode: "image_url"; imageUrl: string; sourceUrl?: string }
   | {
       mode: "upload";
       fileName: string;
@@ -26,6 +29,7 @@ function mapLook(row: Record<string, unknown>): SeedLook {
     id: String(row.id),
     source_post_id: (row.source_post_id as string | null) ?? null,
     source_with_items_image_id: (row.source_with_items_image_id as string | null) ?? null,
+    group_name: (row.group_name as string | null) ?? null,
     image_url: String(row.image_url),
     title: (row.title as string | null) ?? null,
     source_url: (row.source_url as string | null) ?? null,
@@ -84,6 +88,23 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(i, i + size));
   }
   return chunks;
+}
+
+function inferSourceTypeFromUrl(url: string): "instagram" | "web" {
+  const domain = getDomainFromUrl(url) ?? "";
+  if (domain.includes("instagram.com")) {
+    return "instagram";
+  }
+  return "web";
+}
+
+function extFromMimeType(mimeType: string | null): string {
+  if (!mimeType) return "bin";
+  if (mimeType.includes("jpeg")) return "jpg";
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("webp")) return "webp";
+  if (mimeType.includes("gif")) return "gif";
+  return "bin";
 }
 
 export async function buildDraftCandidates(): Promise<{ created: number; skipped: number }> {
@@ -225,18 +246,26 @@ export async function buildDraftCandidates(): Promise<{ created: number; skipped
   };
 }
 
-export async function getCandidatesByStatus(status: ReviewStatus = "draft"): Promise<SeedLook[]> {
+export async function getCandidatesByStatus(
+  status: ReviewStatus = "draft",
+  accountFilter?: string,
+): Promise<SeedLook[]> {
   const supabase = getServerSupabase() as any;
   const env = getServerEnv();
   const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
 
-  const { data, error } = await db
+  let query = db
     .from("seed_look")
     .select(
-      "id,source_post_id,source_with_items_image_id,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
+      "id,source_post_id,source_with_items_image_id,group_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
     )
-    .eq("review_status", status)
-    .order("created_at", { ascending: false });
+    .eq("review_status", status);
+
+  if (accountFilter && accountFilter.trim()) {
+    query = query.ilike("group_name", `%${accountFilter.trim()}%`);
+  }
+
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) throw new ApiError(500, `Failed to fetch candidates: ${error.message}`);
 
@@ -253,7 +282,7 @@ export async function getCandidateById(id: string): Promise<SeedLook> {
   const { data, error } = await db
     .from("seed_look")
     .select(
-      "id,source_post_id,source_with_items_image_id,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
+      "id,source_post_id,source_with_items_image_id,group_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
     )
     .eq("id", id)
     .maybeSingle();
@@ -377,29 +406,82 @@ export async function selectCandidateSource(
 
   if (input.mode === "url") {
     const sourceDomain = getDomainFromUrl(input.sourceUrl);
+    const sourceType = inferSourceTypeFromUrl(input.sourceUrl);
     const { error } = await db
       .from("seed_look")
       .update({
-        image_url: input.sourceUrl,
-        source_type: "web",
+        source_type: sourceType,
         source_url: input.sourceUrl,
         source_domain: sourceDomain,
-        ready_for_backend: true,
+        // URL save step only stores provenance link; image is ingested separately.
+        ready_for_backend: false,
         updated_at: new Date().toISOString(),
       })
       .eq("id", candidateId);
 
     if (error) throw new ApiError(500, error.message);
 
+    return { selected: "url", source_url: input.sourceUrl };
+  }
+
+  if (input.mode === "image_url") {
+    const resolvedSourceUrl = input.sourceUrl ?? candidate.source_url;
+    if (!resolvedSourceUrl) {
+      throw new ApiError(400, "sourceUrl is required before image_url ingest");
+    }
+
+    const sourceDomain = getDomainFromUrl(resolvedSourceUrl);
+    const sourceType = inferSourceTypeFromUrl(resolvedSourceUrl);
+
+    const response = await fetch(input.imageUrl);
+    if (!response.ok) {
+      throw new ApiError(400, `Failed to fetch image URL: ${response.status}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const fileBuffer = Buffer.from(arrayBuffer);
+    if (!fileBuffer.length) {
+      throw new ApiError(400, "Fetched image is empty");
+    }
+
+    const contentType = response.headers.get("content-type");
+    const ext = extFromMimeType(contentType);
+    const storagePath = `${env.WAREHOUSE_STORAGE_PREFIX}/${candidateId}/${Date.now()}-source.${ext}`;
+
+    const upload = await supabase.storage.from(env.WAREHOUSE_STORAGE_BUCKET).upload(storagePath, fileBuffer, {
+      contentType: contentType ?? "application/octet-stream",
+      upsert: false,
+    });
+    if (upload.error) throw new ApiError(500, upload.error.message);
+
+    const publicUrl = `${env.WAREHOUSE_SUPABASE_URL}/storage/v1/object/public/${env.WAREHOUSE_STORAGE_BUCKET}/${storagePath}`;
+    const imageHash = createHash("sha256").update(fileBuffer).digest("hex");
+
+    const { error } = await db
+      .from("seed_look")
+      .update({
+        image_url: publicUrl,
+        source_type: sourceType,
+        source_url: resolvedSourceUrl,
+        source_domain: sourceDomain,
+        ready_for_backend: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", candidateId);
+    if (error) throw new ApiError(500, error.message);
+
     await upsertAssetForLook(candidateId, {
-      sourceType: "web",
-      sourceUrl: input.sourceUrl,
+      sourceType,
+      sourceUrl: resolvedSourceUrl,
       sourceDomain,
-      imageHash: `${candidateId}:web:${input.sourceUrl}`,
-      archivedUrl: input.sourceUrl,
+      imageHash,
+      archivedUrl: publicUrl,
+      storagePath,
+      mimeType: contentType ?? undefined,
+      fileSizeBytes: fileBuffer.byteLength,
     });
 
-    return { selected: "url", image_url: input.sourceUrl };
+    return { selected: "image_url", image_url: publicUrl };
   }
 
   const fileBuffer = Buffer.from(input.fileBase64, "base64");
@@ -418,14 +500,17 @@ export async function selectCandidateSource(
   if (upload.error) throw new ApiError(500, upload.error.message);
 
   const publicUrl = `${env.WAREHOUSE_SUPABASE_URL}/storage/v1/object/public/${env.WAREHOUSE_STORAGE_BUCKET}/${storagePath}`;
+  const sourceUrl = candidate.source_url ?? publicUrl;
+  const sourceDomain = getDomainFromUrl(sourceUrl);
+  const sourceType = sourceUrl === publicUrl ? "manual_upload" : inferSourceTypeFromUrl(sourceUrl);
 
   const { error } = await db
     .from("seed_look")
     .update({
       image_url: publicUrl,
-      source_type: "manual_upload",
-      source_url: publicUrl,
-      source_domain: getDomainFromUrl(publicUrl),
+      source_type: sourceType,
+      source_url: sourceUrl,
+      source_domain: sourceDomain,
       ready_for_backend: true,
       updated_at: new Date().toISOString(),
     })
@@ -434,9 +519,9 @@ export async function selectCandidateSource(
   if (error) throw new ApiError(500, error.message);
 
   await upsertAssetForLook(candidateId, {
-    sourceType: "manual_upload",
-    sourceUrl: publicUrl,
-    sourceDomain: getDomainFromUrl(publicUrl),
+    sourceType: sourceType === "manual_upload" ? "manual_upload" : sourceType,
+    sourceUrl,
+    sourceDomain,
     imageHash: `${candidateId}:upload:${storagePath}`,
     archivedUrl: publicUrl,
     storagePath,

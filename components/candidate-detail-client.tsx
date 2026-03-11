@@ -10,7 +10,8 @@ type Props = {
 };
 
 export function CandidateDetailClient({ candidate, alternatives }: Props) {
-  const [urlInput, setUrlInput] = useState("");
+  const [urlInput, setUrlInput] = useState(candidate.source_url ?? "");
+  const [imageUrlInput, setImageUrlInput] = useState("");
   const [uploadName, setUploadName] = useState("");
   const [uploadB64, setUploadB64] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,7 +91,7 @@ export function CandidateDetailClient({ candidate, alternatives }: Props) {
         ))
       )}
 
-      <h3>URL source 지정</h3>
+      <h3>Step1) URL source 지정 (출처 링크 저장)</h3>
       <div className="row">
         <input
           value={urlInput}
@@ -107,11 +108,33 @@ export function CandidateDetailClient({ candidate, alternatives }: Props) {
             })
           }
         >
-          URL로 확정
+          출처 URL 저장
         </button>
       </div>
 
-      <h3>파일 업로드 source 지정 (base64 입력 MVP)</h3>
+      <h3>Step2) 이미지 확보 (아래 옵션 중 하나 선택)</h3>
+      <h4>옵션1) Image URL ingest (scontent 링크 -&gt; ops-seed 저장)</h4>
+      <div className="row">
+        <input
+          value={imageUrlInput}
+          onChange={(event) => setImageUrlInput(event.target.value)}
+          placeholder="https://scontent-...jpg"
+          style={{ minWidth: 340 }}
+        />
+        <button
+          disabled={busy || !imageUrlInput}
+          onClick={() =>
+            request(`/api/candidates/${candidate.id}/source/select`, {
+              mode: "image_url",
+              imageUrl: imageUrlInput,
+            })
+          }
+        >
+          이미지 URL 적재
+        </button>
+      </div>
+
+      <h4>옵션2) 파일 업로드 source 지정 (base64 입력 MVP)</h4>
       <div className="row" style={{ marginBottom: 8 }}>
         <input
           value={uploadName}
