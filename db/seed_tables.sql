@@ -57,6 +57,7 @@ create table if not exists public.seed_posts (
   ready_for_backend boolean not null default false,
   approved_by text null,
   approved_at timestamp with time zone null,
+  rejected_reason text null,
   exported_to_backend_at timestamp with time zone null,
   export_error text null,
   metadata jsonb null,

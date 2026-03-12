@@ -14,6 +14,7 @@ export type SeedLook = {
   ready_for_backend: boolean;
   approved_by: string | null;
   approved_at: string | null;
+  rejected_reason: string | null;
   exported_to_backend_at: string | null;
   export_error: string | null;
   created_at: string;

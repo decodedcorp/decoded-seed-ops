@@ -22,6 +22,7 @@ export function CandidateDetailClient({
   const [groupNameInput, setGroupNameInput] = useState(candidate.group_name ?? "");
   const [artistNameInput, setArtistNameInput] = useState(candidate.artist_name ?? "");
   const [resolvedImageUrl, setResolvedImageUrl] = useState(candidate.image_url);
+  const [rejectReason, setRejectReason] = useState(candidate.rejected_reason ?? "");
   const [uploadName, setUploadName] = useState("");
   const [uploadB64, setUploadB64] = useState("");
   const [busy, setBusy] = useState(false);
@@ -222,7 +223,20 @@ export function CandidateDetailClient({
         <button disabled={busy} onClick={() => request(`/api/candidates/${candidate.id}/approve`)}>
           Approve
         </button>
-        <button disabled={busy} onClick={() => request(`/api/candidates/${candidate.id}/reject`)}>
+        <input
+          value={rejectReason}
+          onChange={(event) => setRejectReason(event.target.value)}
+          placeholder="반려 사유"
+          style={{ minWidth: 260 }}
+        />
+        <button
+          disabled={busy || !rejectReason.trim()}
+          onClick={() =>
+            request(`/api/candidates/${candidate.id}/reject`, {
+              reason: rejectReason,
+            })
+          }
+        >
           Reject
         </button>
       </div>

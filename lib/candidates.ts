@@ -53,6 +53,7 @@ function mapLook(row: Record<string, unknown>): SeedLook {
     ready_for_backend: Boolean(row.ready_for_backend),
     approved_by: (row.approved_by as string | null) ?? null,
     approved_at: (row.approved_at as string | null) ?? null,
+    rejected_reason: (row.rejected_reason as string | null) ?? null,
     exported_to_backend_at: (row.exported_to_backend_at as string | null) ?? null,
     export_error: (row.export_error as string | null) ?? null,
     created_at: String(row.created_at),
@@ -347,7 +348,7 @@ export async function getCandidatesByStatus(
   let query = db
     .from("seed_posts")
     .select(
-      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
+      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,rejected_reason,exported_to_backend_at,export_error,created_at,updated_at",
     )
     .eq("review_status", status);
 
@@ -372,7 +373,7 @@ export async function getCandidateById(id: string): Promise<SeedLook> {
   const { data, error } = await db
     .from("seed_posts")
     .select(
-      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,exported_to_backend_at,export_error,created_at,updated_at",
+      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,rejected_reason,exported_to_backend_at,export_error,created_at,updated_at",
     )
     .eq("id", id)
     .maybeSingle();
@@ -704,6 +705,7 @@ export async function setCandidateReviewStatus(
   candidateId: string,
   status: "approved" | "rejected",
   actor: string,
+  rejectedReason?: string,
 ): Promise<{ id: string; review_status: "approved" | "rejected" }> {
   const candidate = await getCandidateById(candidateId);
 
@@ -722,6 +724,7 @@ export async function setCandidateReviewStatus(
           review_status: "approved",
           approved_by: actor,
           approved_at: now,
+          rejected_reason: null,
           ready_for_backend: true,
           updated_at: now,
         }
@@ -729,6 +732,7 @@ export async function setCandidateReviewStatus(
           review_status: "rejected",
           approved_by: null,
           approved_at: null,
+          rejected_reason: rejectedReason?.trim() || null,
           ready_for_backend: false,
           updated_at: now,
         };
