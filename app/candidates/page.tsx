@@ -36,13 +36,37 @@ export default async function CandidatesPage({
         <div className="card">조건에 맞는 draft 후보가 없습니다.</div>
       ) : (
         candidates.map((candidate) => (
-          <div className="card" key={candidate.id}>
-            <p>ID: {candidate.id}</p>
-            <p>Account: {candidate.group_name || "-"}</p>
-            <p>Post: {candidate.source_post_id || "-"}</p>
-            <p>Image: {candidate.image_url}</p>
-            <p>Ready: {String(candidate.ready_for_backend)}</p>
-            <Link href={`/candidates/${candidate.id}`}>상세 보기</Link>
+          <div className="card" key={candidate.id} style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element -- arbitrary CDN / Instagram URLs */}
+            <a href={`/candidates/${candidate.id}`} style={{ flexShrink: 0 }}>
+              <img
+                src={candidate.image_url}
+                alt={`Seed candidate ${candidate.id.slice(0, 8)}`}
+                width={120}
+                height={120}
+                style={{
+                  width: 120,
+                  height: 120,
+                  objectFit: "cover",
+                  borderRadius: 8,
+                  border: "1px solid #e5e5e5",
+                  display: "block",
+                }}
+              />
+            </a>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <p>ID: {candidate.id}</p>
+              <p>Group: {candidate.group_label || candidate.group_account_id || "-"}</p>
+              <p>Post: {candidate.source_post_id || "-"}</p>
+              <p style={{ wordBreak: "break-all" }}>
+                Image:{" "}
+                <a href={candidate.image_url} target="_blank" rel="noreferrer">
+                  {candidate.image_url}
+                </a>
+              </p>
+              <p>Status: {candidate.status}</p>
+              <Link href={`/candidates/${candidate.id}`}>상세 보기</Link>
+            </div>
           </div>
         ))
       )}

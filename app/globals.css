@@ -4,27 +4,43 @@
 
 body {
   margin: 0;
-  font-family: Arial, sans-serif;
-  background: #f5f5f5;
-  color: #111;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  color: #0f172a;
 }
 
 a {
-  color: inherit;
+  color: #2563eb;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
 }
 
 main {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 20px 24px;
 }
 
 .card {
-  background: white;
-  border: 1px solid #e5e5e5;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 12px;
+  background: #ffffffd9;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 14px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(8px);
 }
 
 .row {
@@ -35,11 +51,17 @@ main {
 }
 
 button {
-  border: 1px solid #ccc;
+  border: 1px solid #cbd5e1;
   background: white;
-  border-radius: 6px;
+  border-radius: 10px;
   padding: 8px 12px;
   cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: #94a3b8;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
 button:disabled {
@@ -50,9 +72,18 @@ button:disabled {
 input,
 select,
 textarea {
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
   padding: 8px;
+  background: #fff;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
 pre {
@@ -61,4 +92,94 @@ pre {
   border: 1px solid #eee;
   border-radius: 6px;
   padding: 12px;
+}
+
+.review-table-card {
+  padding: 14px;
+}
+
+.review-table-scroll {
+  overflow-x: auto;
+}
+
+.review-table {
+  width: 100%;
+  min-width: 1240px;
+  border-collapse: collapse;
+}
+
+.review-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 11px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.review-table td {
+  padding: 10px;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: middle;
+  color: #0f172a;
+}
+
+.review-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.account-id-cell {
+  word-break: break-all;
+  font-weight: 600;
+}
+
+.align-right {
+  text-align: right !important;
+}
+
+.review-input {
+  min-width: 170px;
+  width: 100%;
+}
+
+.review-select {
+  min-width: 130px;
+  width: 100%;
+}
+
+.review-avatar {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 9999px;
+  border: 1px solid #dbe4ee;
+  display: block;
+}
+
+.review-approve-button {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border-color: #1d4ed8;
+  color: #fff;
+  font-weight: 600;
+}
+
+.review-approve-button:hover:not(:disabled) {
+  border-color: #1e40af;
+}
+
+.review-feedback {
+  margin-top: 12px;
+  color: #0f172a;
+  font-weight: 500;
+}
+
+.review-empty-card {
+  text-align: center;
+  padding: 28px 18px;
 }

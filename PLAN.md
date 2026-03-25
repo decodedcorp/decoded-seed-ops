@@ -25,7 +25,8 @@
 
 ### 기술 스택 (MVP)
 - Next.js (App Router)
-- Supabase (DB + Storage)
+- Supabase (DB)
+- Cloudflare R2 (이미지 스토리지)
 - TypeScript
 - Vercel
 
@@ -89,11 +90,15 @@ seed 테이블은 backend 계약(`posts/spots/solutions`)에 맞춰 설계하되
 ## 6. 환경변수 정책
 
 ### 서버 전용 (민감)
-- `WAREHOUSE_SUPABASE_URL`
-- `WAREHOUSE_SUPABASE_SERVICE_ROLE_KEY`
-- `WAREHOUSE_DB_SCHEMA`
-- `WAREHOUSE_STORAGE_BUCKET`
-- `WAREHOUSE_STORAGE_PREFIX`
+- `SUPABASE_URL` (backend DB project)
+- `SUPABASE_SERVICE_ROLE_KEY` (backend DB project)
+- `SUPABASE_DB_SCHEMA` (`warehouse`)
+- `CLOUDFLARE_R2_ACCOUNT_ID`
+- `CLOUDFLARE_R2_ACCESS_KEY_ID`
+- `CLOUDFLARE_R2_SECRET_ACCESS_KEY`
+- `CLOUDFLARE_R2_BUCKET`
+- `CLOUDFLARE_R2_PUBLIC_BASE_URL`
+- `CLOUDFLARE_R2_PREFIX` (optional, default `ops-seed`)
 
 ### 공개 가능 (클라이언트)
 - `NEXT_PUBLIC_APP_ENV` (필요 시)

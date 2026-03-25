@@ -2,20 +2,19 @@ import { createHash } from "node:crypto";
 
 import { ApiError } from "@/lib/errors";
 import { getServerEnv } from "@/lib/env";
+import { uploadBufferToR2 } from "@/lib/storage/r2";
 import { getServerSupabase } from "@/lib/supabase/server";
 import { getDomainFromUrl, sanitizeFileName } from "@/lib/utils";
-import type { AlternativeImage, GroupArtistOptions, ReviewStatus, SeedLook } from "@/types";
+import type { AlternativeImage, GroupArtistOptions, SeedLook, SeedPostStatus } from "@/types";
 
 type RawPost = {
   id: string;
-  ts: string;
-  caption_text?: string | null;
+  posted_at: string;
   tagged_account_ids?: unknown;
 };
-type RawImage = { id: string; image_url: string; image_hash: string; with_items: boolean };
-type RawPostImageLink = { post_id: string; image_id: string };
-type RawSeedPostInsertResult = { id: string; source_with_items_image_id: string | null; image_url: string };
-type SeedPostSourceRow = { source_with_items_image_id: string | null };
+type RawImage = { id: string; post_id: string; image_url: string; image_hash: string; with_items: boolean };
+type RawSeedPostInsertResult = { id: string; source_image_id: string | null; image_url: string };
+type SeedPostSourceRow = { source_image_id: string | null };
 type DbErrorLike = { message: string; code?: string; details?: string; hint?: string };
 type RawInstagramAccount = {
   id: string;
@@ -30,7 +29,12 @@ type SourceSelectInput =
   | { mode: "alternative"; alternativeImageId: string }
   | { mode: "url"; sourceUrl: string }
   | { mode: "image_url"; imageUrl: string; sourceUrl?: string }
-  | { mode: "group_artist"; groupName: string | null; artistName: string | null }
+  | {
+      mode: "group_artist";
+      groupAccountId: string | null;
+      artistAccountId: string | null;
+      context?: string | null;
+    }
   | {
       mode: "upload";
       fileName: string;
@@ -38,31 +42,60 @@ type SourceSelectInput =
       fileBase64: string;
     };
 
-function mapLook(row: Record<string, unknown>): SeedLook {
+function asObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function mergeMediaSource(
+  existing: unknown,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = asObjectRecord(existing) ?? {};
+  return { ...base, ...patch };
+}
+
+function mergeMetadata(
+  existing: unknown,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = asObjectRecord(existing) ?? {};
+  return { ...base, ...patch };
+}
+
+function step1SourceUrlFromMedia(media: unknown): string | null {
+  const m = asObjectRecord(media);
+  if (!m) return null;
+  const u = m.source_url;
+  return typeof u === "string" && u.length > 0 ? u : null;
+}
+
+function mapLookFromRow(row: Record<string, unknown>, accountById: Map<string, RawInstagramAccount>): SeedLook {
+  const gid = (row.group_account_id as string | null) ?? null;
+  const aid = (row.artist_account_id as string | null) ?? null;
+  const gAcc = gid ? accountById.get(gid) : undefined;
+  const aAcc = aid ? accountById.get(aid) : undefined;
+
   return {
     id: String(row.id),
     source_post_id: (row.source_post_id as string | null) ?? null,
-    source_with_items_image_id: (row.source_with_items_image_id as string | null) ?? null,
-    group_name: (row.group_name as string | null) ?? null,
-    artist_name: (row.artist_name as string | null) ?? null,
+    source_image_id: (row.source_image_id as string | null) ?? null,
     image_url: String(row.image_url),
-    title: (row.title as string | null) ?? null,
-    source_url: (row.source_url as string | null) ?? null,
-    source_domain: (row.source_domain as string | null) ?? null,
-    review_status: row.review_status as ReviewStatus,
-    ready_for_backend: Boolean(row.ready_for_backend),
-    approved_by: (row.approved_by as string | null) ?? null,
-    approved_at: (row.approved_at as string | null) ?? null,
-    rejected_reason: (row.rejected_reason as string | null) ?? null,
-    exported_to_backend_at: (row.exported_to_backend_at as string | null) ?? null,
-    export_error: (row.export_error as string | null) ?? null,
+    media_source: asObjectRecord(row.media_source),
+    context: (row.context as string | null) ?? null,
+    group_account_id: gid,
+    artist_account_id: aid,
+    group_label: gAcc ? accountDisplayName(gAcc) : null,
+    artist_label: aAcc ? accountDisplayName(aAcc) : null,
+    status: row.status as SeedPostStatus,
+    publish_error: (row.publish_error as string | null) ?? null,
+    metadata: asObjectRecord(row.metadata),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
 }
 
 function toComparableTime(value: string): number | null {
-  // Supports both "2025-01-01_00-00-00" and ISO-like timestamps.
   if (/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(value)) {
     const [datePart, timePart] = value.split("_");
     const normalized = `${datePart}T${timePart.replace(/-/g, ":")}Z`;
@@ -82,7 +115,6 @@ function isPostAfterStart(postTs: string, startTs: string): boolean {
     return postTime >= startTime;
   }
 
-  // Fallback for legacy string formats.
   return postTs >= startTs;
 }
 
@@ -104,14 +136,6 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(i, i + size));
   }
   return chunks;
-}
-
-function inferSourceTypeFromUrl(url: string): "instagram" | "web" {
-  const domain = getDomainFromUrl(url) ?? "";
-  if (domain.includes("instagram.com")) {
-    return "instagram";
-  }
-  return "web";
 }
 
 function extFromMimeType(mimeType: string | null): string {
@@ -152,25 +176,25 @@ function parseTaggedAccountIds(value: unknown): string[] {
   return [];
 }
 
+/** REQUIREMENT 2-1a: single group / single artist auto; multiple artists -> artist null */
 function resolveAutoGroupArtist(
   taggedIds: string[],
   accountById: Map<string, RawInstagramAccount>,
-): { groupName: string | null; artistName: string | null } {
+): { groupAccountId: string | null; artistAccountId: string | null } {
   const taggedAccounts = taggedIds
     .map((id) => accountById.get(id))
     .filter((v): v is RawInstagramAccount => Boolean(v));
-  const groupAccounts = taggedAccounts.filter((a) => a.account_type === "artist_group");
+  const groupAccounts = taggedAccounts.filter((a) => a.account_type === "group");
   const artistAccounts = taggedAccounts.filter((a) => a.account_type === "artist");
 
-  const groupName =
-    groupAccounts.length === 1 ? accountDisplayName(groupAccounts[0]) : null;
-  const artistName =
-    artistAccounts.length === 1 ? accountDisplayName(artistAccounts[0]) : null;
+  const groupAccountId = groupAccounts.length === 1 ? groupAccounts[0].id : null;
+  let artistAccountId: string | null =
+    artistAccounts.length === 1 ? artistAccounts[0].id : null;
+  if (artistAccounts.length > 1) {
+    artistAccountId = null;
+  }
 
-  return {
-    groupName: groupName ?? null,
-    artistName: artistAccounts.length > 1 ? null : artistName ?? null,
-  };
+  return { groupAccountId, artistAccountId };
 }
 
 async function fetchAccountsByIds(
@@ -182,104 +206,126 @@ async function fetchAccountsByIds(
   const rows: RawInstagramAccount[] = [];
   for (const idChunk of chunkArray([...new Set(ids)], 200)) {
     const { data, error } = await db
-      .from("instagram_account")
+      .from("instagram_accounts")
       .select("id,username,name_en,name_ko,account_type")
       .in("id", idChunk);
-    if (error) throw new ApiError(500, dbErrorMessage("instagram_account query failed", error));
+    if (error) throw new ApiError(500, dbErrorMessage("instagram_accounts query failed", error));
     rows.push(...((data ?? []) as RawInstagramAccount[]));
   }
 
   return new Map(rows.map((row) => [row.id, row]));
 }
 
-export async function buildDraftCandidates(): Promise<{ created: number; skipped: number }> {
-  const supabase = getServerSupabase() as any;
+async function attachLabelsToLooks(looks: SeedLook[]): Promise<SeedLook[]> {
+  const ids = new Set<string>();
+  for (const look of looks) {
+    if (look.group_account_id) ids.add(look.group_account_id);
+    if (look.artist_account_id) ids.add(look.artist_account_id);
+  }
+  if (!ids.size) return looks;
+
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const accountById = await fetchAccountsByIds(db, [...ids]);
+
+  return looks.map((look) =>
+    mapLookFromRow(
+      {
+        id: look.id,
+        source_post_id: look.source_post_id,
+        source_image_id: look.source_image_id,
+        image_url: look.image_url,
+        media_source: look.media_source,
+        context: look.context,
+        group_account_id: look.group_account_id,
+        artist_account_id: look.artist_account_id,
+        status: look.status,
+        publish_error: look.publish_error,
+        metadata: look.metadata,
+        created_at: look.created_at,
+        updated_at: look.updated_at,
+      },
+      accountById,
+    ),
+  );
+}
+
+const SEED_POST_SELECT =
+  "id,source_post_id,source_image_id,image_url,media_source,context,group_account_id,artist_account_id,metadata,status,publish_error,created_at,updated_at";
+
+export async function buildDraftCandidates(): Promise<{ created: number; skipped: number }> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
   const { data: withItemsImages, error: imagesError } = await db
-    .from("image")
-    .select("id,image_url,image_hash,with_items")
+    .from("images")
+    .select("id,post_id,image_url,image_hash,with_items")
     .eq("with_items", true);
 
-  if (imagesError) throw new ApiError(500, dbErrorMessage("image query failed", imagesError));
+  if (imagesError) throw new ApiError(500, dbErrorMessage("images query failed", imagesError));
   const images = (withItemsImages ?? []) as RawImage[];
   if (!images.length) return { created: 0, skipped: 0 };
 
-  const imageIds = images.map((image: RawImage) => image.id);
-
-  const imageIdChunks = chunkArray(imageIds, 200);
-  const links: RawPostImageLink[] = [];
-  for (const idChunk of imageIdChunks) {
-    const { data: postLinks, error: linksError } = await db
-      .from("post_image")
-      .select("post_id,image_id")
-      .in("image_id", idChunk);
-
-    if (linksError) throw new ApiError(500, dbErrorMessage("post_image query failed", linksError));
-    links.push(...((postLinks ?? []) as RawPostImageLink[]));
-  }
-
-  if (!links.length) return { created: 0, skipped: imageIds.length };
-
-  const postIds = [...new Set(links.map((link: RawPostImageLink) => link.post_id))];
+  const postIds = [...new Set(images.map((img) => img.post_id))];
 
   const postRows: RawPost[] = [];
   for (const idChunk of chunkArray(postIds, 200)) {
     const { data: posts, error: postsError } = await db
-      .from("post")
-      .select("id,ts,tagged_account_ids")
+      .from("posts")
+      .select("id,posted_at,tagged_account_ids")
       .in("id", idChunk);
 
-    if (postsError) throw new ApiError(500, dbErrorMessage("post query failed", postsError));
+    if (postsError) throw new ApiError(500, dbErrorMessage("posts query failed", postsError));
     postRows.push(...((posts ?? []) as RawPost[]));
   }
 
-  const sourcePosts = postRows.filter((post) => isPostAfterStart(post.ts, env.CANDIDATE_START_TS));
-  if (!sourcePosts.length) return { created: 0, skipped: imageIds.length };
+  const postById = new Map(postRows.map((post) => [post.id, post]));
+  const sourcePosts = postRows.filter((post) => isPostAfterStart(post.posted_at, env.CANDIDATE_START_TS));
+  if (!sourcePosts.length) return { created: 0, skipped: images.length };
 
   const taggedAccountIds = sourcePosts.flatMap((post) => parseTaggedAccountIds(post.tagged_account_ids));
   const accountById = await fetchAccountsByIds(db, taggedAccountIds);
 
-  const postById = new Map(sourcePosts.map((post) => [post.id, post]));
   const imageById = new Map(images.map((image: RawImage) => [image.id, image]));
 
-  const candidateRows = links
-    .map((link: RawPostImageLink) => {
-      const post = postById.get(link.post_id);
-      const image = imageById.get(link.image_id);
-      if (!post || !image) return null;
+  const candidateRows = images
+    .map((image: RawImage) => {
+      const post = postById.get(image.post_id);
+      if (!post) return null;
+      if (!isPostAfterStart(post.posted_at, env.CANDIDATE_START_TS)) return null;
+
       const taggedIds = parseTaggedAccountIds(post.tagged_account_ids);
-      const { groupName, artistName } = resolveAutoGroupArtist(taggedIds, accountById);
+      const { groupAccountId, artistAccountId } = resolveAutoGroupArtist(taggedIds, accountById);
 
       return {
         source_post_id: post.id,
-        source_with_items_image_id: image.id,
+        source_image_id: image.id,
         image_url: image.image_url,
-        title: null,
-        group_name: groupName,
-        artist_name: artistName,
-        source_type: "instagram",
-        source_url: image.image_url,
-        source_domain: getDomainFromUrl(image.image_url),
-        created_with_solutions: true,
-        review_status: "draft",
-        ready_for_backend: false,
-        metadata: { source_ts: post.ts },
+        media_source: {
+          source_url: image.image_url,
+          source_domain: getDomainFromUrl(image.image_url),
+        },
+        context: null,
+        group_account_id: groupAccountId,
+        artist_account_id: artistAccountId,
+        status: "draft" as const,
+        metadata: { source_posted_at: post.posted_at },
       };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
-  if (!candidateRows.length) return { created: 0, skipped: imageIds.length };
+  if (!candidateRows.length) return { created: 0, skipped: images.length };
 
-  const targetImageIds = [...new Set(candidateRows.map((row: (typeof candidateRows)[number]) => row.source_with_items_image_id))];
+  const targetImageIds = [...new Set(candidateRows.map((row) => row.source_image_id))];
 
   const existingRows: SeedPostSourceRow[] = [];
   for (const idChunk of chunkArray(targetImageIds, 200)) {
     const { data: existing, error: existingError } = await db
       .from("seed_posts")
-      .select("source_with_items_image_id")
-      .in("source_with_items_image_id", idChunk);
+      .select("source_image_id")
+      .in("source_image_id", idChunk);
 
     if (existingError) {
       throw new ApiError(500, dbErrorMessage("seed_posts existing query failed", existingError));
@@ -288,13 +334,11 @@ export async function buildDraftCandidates(): Promise<{ created: number; skipped
   }
   const existingImageIds = new Set(
     existingRows
-      .map((row: SeedPostSourceRow) => row.source_with_items_image_id)
+      .map((row: SeedPostSourceRow) => row.source_image_id)
       .filter((value): value is string => Boolean(value)),
   );
 
-  const rowsToInsert = candidateRows.filter(
-    (row) => !existingImageIds.has(row.source_with_items_image_id),
-  );
+  const rowsToInsert = candidateRows.filter((row) => !existingImageIds.has(row.source_image_id));
 
   if (!rowsToInsert.length) {
     return { created: 0, skipped: candidateRows.length };
@@ -303,23 +347,21 @@ export async function buildDraftCandidates(): Promise<{ created: number; skipped
   const { data: insertedPosts, error: insertError } = await db
     .from("seed_posts")
     .insert(rowsToInsert)
-    .select("id,source_with_items_image_id,image_url");
+    .select("id,source_image_id,image_url");
 
   if (insertError) throw new ApiError(500, dbErrorMessage("seed_posts insert failed", insertError));
 
   const assetRows = ((insertedPosts ?? []) as RawSeedPostInsertResult[])
-    .map((post: RawSeedPostInsertResult) => {
-      const image = post.source_with_items_image_id
-        ? imageById.get(post.source_with_items_image_id)
-        : undefined;
+    .map((sp: RawSeedPostInsertResult) => {
+      const image = sp.source_image_id ? imageById.get(sp.source_image_id) : undefined;
       if (!image) return null;
       return {
-        post_id: post.id,
-        source_type: "instagram",
+        seed_post_id: sp.id,
         source_url: image.image_url,
         source_domain: getDomainFromUrl(image.image_url),
         archived_url: image.image_url,
         image_hash: image.image_hash,
+        metadata: null,
       };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
@@ -338,78 +380,81 @@ export async function buildDraftCandidates(): Promise<{ created: number; skipped
 }
 
 export async function getCandidatesByStatus(
-  status: ReviewStatus = "draft",
+  status: SeedPostStatus = "draft",
   accountFilter?: string,
 ): Promise<SeedLook[]> {
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
-  let query = db
-    .from("seed_posts")
-    .select(
-      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,rejected_reason,exported_to_backend_at,export_error,created_at,updated_at",
-    )
-    .eq("review_status", status);
+  let query = db.from("seed_posts").select(SEED_POST_SELECT).eq("status", status);
 
   if (accountFilter && accountFilter.trim()) {
-    query = query.ilike("group_name", `%${accountFilter.trim()}%`);
+    const term = accountFilter.trim();
+    const pattern = `%${term}%`;
+    const { data: matchAccounts, error: accError } = await db
+      .from("instagram_accounts")
+      .select("id")
+      .or(`username.ilike.${pattern},name_en.ilike.${pattern},name_ko.ilike.${pattern}`);
+
+    if (accError) {
+      throw new ApiError(500, dbErrorMessage("instagram_accounts filter query failed", accError));
+    }
+    const matchIds = ((matchAccounts ?? []) as { id: string }[]).map((r) => r.id);
+    if (!matchIds.length) {
+      return [];
+    }
+    const orParts = matchIds.flatMap((id) => [
+      `group_account_id.eq.${id}`,
+      `artist_account_id.eq.${id}`,
+    ]);
+    query = query.or(orParts.join(","));
   }
 
   const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) throw new ApiError(500, `Failed to fetch candidates: ${error.message}`);
 
-  return ((data ?? []) as Array<Record<string, unknown>>).map((row: Record<string, unknown>) =>
-    mapLook(row),
-  );
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  const looks = rows.map((row) => mapLookFromRow(row, new Map()));
+  return attachLabelsToLooks(looks);
 }
 
 export async function getCandidateById(id: string): Promise<SeedLook> {
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
   const { data, error } = await db
     .from("seed_posts")
-    .select(
-      "id,source_post_id,source_with_items_image_id,group_name,artist_name,image_url,title,source_url,source_domain,review_status,ready_for_backend,approved_by,approved_at,rejected_reason,exported_to_backend_at,export_error,created_at,updated_at",
-    )
+    .select(SEED_POST_SELECT)
     .eq("id", id)
     .maybeSingle();
 
   if (error) throw new ApiError(500, error.message);
   if (!data) throw new ApiError(404, "Candidate not found");
 
-  return mapLook(data);
+  const [withLabel] = await attachLabelsToLooks([mapLookFromRow(data as Record<string, unknown>, new Map())]);
+  return withLabel;
 }
 
 export async function getAlternativesForCandidate(id: string): Promise<AlternativeImage[]> {
   const candidate = await getCandidateById(id);
   if (!candidate.source_post_id) return [];
 
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
-  const { data: links, error: linksError } = await db
-    .from("post_image")
-    .select("image_id")
-    .eq("post_id", candidate.source_post_id);
-
-  if (linksError) throw new ApiError(500, linksError.message);
-  const imageIds = ((links ?? []) as RawPostImageLink[]).map((link: RawPostImageLink) => link.image_id);
-  if (!imageIds.length) return [];
-
-  const { data: images, error: imagesError } = await db
-    .from("image")
+  const { data: imgs, error: imagesError } = await db
+    .from("images")
     .select("id,image_url,image_hash,with_items")
-    .in("id", imageIds)
+    .eq("post_id", candidate.source_post_id)
     .eq("with_items", false);
 
   if (imagesError) throw new ApiError(500, imagesError.message);
 
-  return ((images ?? []) as RawImage[]).map((image: RawImage) => ({
+  return ((imgs ?? []) as RawImage[]).map((image: RawImage) => ({
     image_id: image.id,
     image_url: image.image_url,
     image_hash: image.image_hash,
@@ -417,34 +462,27 @@ export async function getAlternativesForCandidate(id: string): Promise<Alternati
 }
 
 async function upsertAssetForLook(
-  postId: string,
+  seedPostId: string,
   values: {
-    sourceType: "instagram" | "web" | "manual_upload";
     sourceUrl: string;
     sourceDomain: string | null;
     imageHash: string;
     archivedUrl?: string;
-    storagePath?: string;
-    mimeType?: string;
-    fileSizeBytes?: number;
+    metadata?: Record<string, unknown> | null;
   },
 ) {
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
   const { error } = await db.from("seed_asset").upsert(
     {
-      post_id: postId,
-      source_type: values.sourceType,
+      seed_post_id: seedPostId,
       source_url: values.sourceUrl,
       source_domain: values.sourceDomain,
       archived_url: values.archivedUrl ?? values.sourceUrl,
-      storage_bucket: values.storagePath ? env.WAREHOUSE_STORAGE_BUCKET : null,
-      storage_path: values.storagePath ?? null,
       image_hash: values.imageHash,
-      mime_type: values.mimeType ?? null,
-      file_size_bytes: values.fileSizeBytes ?? null,
+      metadata: values.metadata ?? null,
     },
     { onConflict: "image_hash", ignoreDuplicates: true },
   );
@@ -457,13 +495,14 @@ export async function selectCandidateSource(
   input: SourceSelectInput,
 ): Promise<Record<string, string | null>> {
   const candidate = await getCandidateById(candidateId);
-  if (candidate.review_status !== "draft") {
+  if (candidate.status !== "draft") {
     throw new ApiError(409, "Source can be changed only in draft status");
   }
 
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const now = new Date().toISOString();
 
   if (input.mode === "alternative") {
     const alternatives = await getAlternativesForCandidate(candidateId);
@@ -474,22 +513,23 @@ export async function selectCandidateSource(
       .from("seed_posts")
       .update({
         image_url: chosen.image_url,
-        source_type: "instagram",
-        source_url: chosen.image_url,
-        source_domain: getDomainFromUrl(chosen.image_url),
-        ready_for_backend: true,
-        updated_at: new Date().toISOString(),
+        source_image_id: input.alternativeImageId,
+        media_source: mergeMediaSource(candidate.media_source, {
+          source_url: chosen.image_url,
+          source_domain: getDomainFromUrl(chosen.image_url),
+        }),
+        updated_at: now,
       })
       .eq("id", candidateId);
 
     if (error) throw new ApiError(500, error.message);
 
     await upsertAssetForLook(candidateId, {
-      sourceType: "instagram",
       sourceUrl: chosen.image_url,
       sourceDomain: getDomainFromUrl(chosen.image_url),
       imageHash: chosen.image_hash,
       archivedUrl: chosen.image_url,
+      metadata: null,
     });
 
     return { selected: "alternative", image_url: chosen.image_url };
@@ -497,16 +537,16 @@ export async function selectCandidateSource(
 
   if (input.mode === "url") {
     const sourceDomain = getDomainFromUrl(input.sourceUrl);
-    const sourceType = inferSourceTypeFromUrl(input.sourceUrl);
+    const nextMedia = mergeMediaSource(candidate.media_source, {
+      source_url: input.sourceUrl,
+      source_domain: sourceDomain,
+    });
+
     const { error } = await db
       .from("seed_posts")
       .update({
-        source_type: sourceType,
-        source_url: input.sourceUrl,
-        source_domain: sourceDomain,
-        // URL save step only stores provenance link; image is ingested separately.
-        ready_for_backend: false,
-        updated_at: new Date().toISOString(),
+        media_source: nextMedia,
+        updated_at: now,
       })
       .eq("id", candidateId);
 
@@ -519,23 +559,31 @@ export async function selectCandidateSource(
     const { error } = await db
       .from("seed_posts")
       .update({
-        group_name: input.groupName,
-        artist_name: input.artistName,
-        updated_at: new Date().toISOString(),
+        group_account_id: input.groupAccountId,
+        artist_account_id: input.artistAccountId,
+        context: input.context?.trim() ? input.context.trim() : null,
+        updated_at: now,
       })
       .eq("id", candidateId);
     if (error) throw new ApiError(500, error.message);
-    return { selected: "group_artist", group_name: input.groupName, artist_name: input.artistName };
+    return {
+      selected: "group_artist",
+      group_account_id: input.groupAccountId,
+      artist_account_id: input.artistAccountId,
+    };
   }
 
   if (input.mode === "image_url") {
-    const resolvedSourceUrl = input.sourceUrl ?? candidate.source_url;
+    const resolvedSourceUrl = input.sourceUrl ?? step1SourceUrlFromMedia(candidate.media_source);
     if (!resolvedSourceUrl) {
-      throw new ApiError(400, "sourceUrl is required before image_url ingest");
+      throw new ApiError(400, "Save Step1 source URL before image_url ingest, or pass sourceUrl in body");
     }
 
     const sourceDomain = getDomainFromUrl(resolvedSourceUrl);
-    const sourceType = inferSourceTypeFromUrl(resolvedSourceUrl);
+    const nextMedia = mergeMediaSource(candidate.media_source, {
+      source_url: resolvedSourceUrl,
+      source_domain: sourceDomain,
+    });
 
     const response = await fetch(input.imageUrl);
     if (!response.ok) {
@@ -550,39 +598,35 @@ export async function selectCandidateSource(
 
     const contentType = response.headers.get("content-type");
     const ext = extFromMimeType(contentType);
-    const storagePath = `${env.WAREHOUSE_STORAGE_PREFIX}/${candidateId}/${Date.now()}-source.${ext}`;
-
-    const upload = await supabase.storage.from(env.WAREHOUSE_STORAGE_BUCKET).upload(storagePath, fileBuffer, {
-      contentType: contentType ?? "application/octet-stream",
-      upsert: false,
-    });
-    if (upload.error) throw new ApiError(500, upload.error.message);
-
-    const publicUrl = `${env.WAREHOUSE_SUPABASE_URL}/storage/v1/object/public/${env.WAREHOUSE_STORAGE_BUCKET}/${storagePath}`;
+    const r2Key = `${env.CLOUDFLARE_R2_PREFIX}/${candidateId}/${Date.now()}-source.${ext}`;
+    const { publicUrl } = await uploadBufferToR2(r2Key, fileBuffer, contentType ?? "application/octet-stream");
     const imageHash = createHash("sha256").update(fileBuffer).digest("hex");
 
     const { error } = await db
       .from("seed_posts")
       .update({
         image_url: publicUrl,
-        source_type: sourceType,
-        source_url: resolvedSourceUrl,
-        source_domain: sourceDomain,
-        ready_for_backend: true,
-        updated_at: new Date().toISOString(),
+        media_source: nextMedia,
+        updated_at: now,
       })
       .eq("id", candidateId);
     if (error) throw new ApiError(500, error.message);
 
     await upsertAssetForLook(candidateId, {
-      sourceType,
       sourceUrl: resolvedSourceUrl,
       sourceDomain,
       imageHash,
       archivedUrl: publicUrl,
-      storagePath,
-      mimeType: contentType ?? undefined,
-      fileSizeBytes: fileBuffer.byteLength,
+      metadata: {
+        ingest: "image_url",
+        storage_provider: "cloudflare_r2",
+        r2_bucket: env.CLOUDFLARE_R2_BUCKET,
+        r2_key: r2Key,
+        storage_bucket: env.CLOUDFLARE_R2_BUCKET,
+        storage_path: r2Key,
+        mime_type: contentType,
+        file_size_bytes: fileBuffer.byteLength,
+      },
     });
 
     return { selected: "image_url", image_url: publicUrl };
@@ -592,48 +636,49 @@ export async function selectCandidateSource(
   if (!fileBuffer.length) throw new ApiError(400, "Upload file is empty");
 
   const fileName = sanitizeFileName(input.fileName || "upload.bin");
-  const storagePath = `${env.WAREHOUSE_STORAGE_PREFIX}/${candidateId}/${Date.now()}-${fileName}`;
-
-  const upload = await supabase.storage
-    .from(env.WAREHOUSE_STORAGE_BUCKET)
-    .upload(storagePath, fileBuffer, {
-      contentType: input.mimeType ?? "application/octet-stream",
-      upsert: false,
-    });
-
-  if (upload.error) throw new ApiError(500, upload.error.message);
-
-  const publicUrl = `${env.WAREHOUSE_SUPABASE_URL}/storage/v1/object/public/${env.WAREHOUSE_STORAGE_BUCKET}/${storagePath}`;
-  const sourceUrl = candidate.source_url ?? publicUrl;
+  const r2Key = `${env.CLOUDFLARE_R2_PREFIX}/${candidateId}/${Date.now()}-${fileName}`;
+  const { publicUrl } = await uploadBufferToR2(r2Key, fileBuffer, input.mimeType ?? "application/octet-stream");
+  const sourceUrl = step1SourceUrlFromMedia(candidate.media_source) ?? publicUrl;
   const sourceDomain = getDomainFromUrl(sourceUrl);
-  const sourceType = sourceUrl === publicUrl ? "manual_upload" : inferSourceTypeFromUrl(sourceUrl);
+  const nextMedia = mergeMediaSource(candidate.media_source, {
+    source_url: sourceUrl,
+    source_domain: sourceDomain,
+  });
 
   const { error } = await db
     .from("seed_posts")
     .update({
       image_url: publicUrl,
-      source_type: sourceType,
-      source_url: sourceUrl,
-      source_domain: sourceDomain,
-      ready_for_backend: true,
-      updated_at: new Date().toISOString(),
+      media_source: nextMedia,
+      updated_at: now,
     })
     .eq("id", candidateId);
 
   if (error) throw new ApiError(500, error.message);
 
   await upsertAssetForLook(candidateId, {
-    sourceType: sourceType === "manual_upload" ? "manual_upload" : sourceType,
     sourceUrl,
     sourceDomain,
-    imageHash: `${candidateId}:upload:${storagePath}`,
+    imageHash: `${candidateId}:upload:${r2Key}`,
     archivedUrl: publicUrl,
-    storagePath,
-    mimeType: input.mimeType,
-    fileSizeBytes: fileBuffer.byteLength,
+    metadata: {
+      ingest: "upload",
+      storage_provider: "cloudflare_r2",
+      r2_bucket: env.CLOUDFLARE_R2_BUCKET,
+      r2_key: r2Key,
+      storage_bucket: env.CLOUDFLARE_R2_BUCKET,
+      storage_path: r2Key,
+      mime_type: input.mimeType ?? null,
+      file_size_bytes: fileBuffer.byteLength,
+    },
   });
 
-  return { selected: "upload", image_url: publicUrl, storage_path: storagePath };
+  return { selected: "upload", image_url: publicUrl, storage_path: r2Key };
+}
+
+function toAccountOption(account: RawInstagramAccount): { id: string; label: string } {
+  const label = accountDisplayName(account) ?? account.username ?? account.id;
+  return { id: account.id, label };
 }
 
 export async function getGroupArtistOptionsForCandidate(candidateId: string): Promise<GroupArtistOptions> {
@@ -642,16 +687,16 @@ export async function getGroupArtistOptionsForCandidate(candidateId: string): Pr
     return { groupCandidates: [], artistCandidates: [] };
   }
 
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
   const { data: postRow, error: postError } = await db
-    .from("post")
+    .from("posts")
     .select("id,tagged_account_ids")
     .eq("id", candidate.source_post_id)
     .maybeSingle();
-  if (postError) throw new ApiError(500, dbErrorMessage("post tagged accounts query failed", postError));
+  if (postError) throw new ApiError(500, dbErrorMessage("posts tagged accounts query failed", postError));
   if (!postRow) return { groupCandidates: [], artistCandidates: [] };
 
   const taggedIds = parseTaggedAccountIds(postRow.tagged_account_ids);
@@ -660,85 +705,90 @@ export async function getGroupArtistOptionsForCandidate(candidateId: string): Pr
     .map((id) => accountById.get(id))
     .filter((v): v is RawInstagramAccount => Boolean(v));
 
-  const groupAccounts = taggedAccounts.filter((a) => a.account_type === "artist_group");
+  const groupAccounts = taggedAccounts.filter((a) => a.account_type === "group");
   const taggedArtists = taggedAccounts.filter((a) => a.account_type === "artist");
-  const groupCandidates = groupAccounts
-    .map((a) => accountDisplayName(a))
-    .filter((v): v is string => Boolean(v));
+  const groupCandidates = groupAccounts.map((a) => toAccountOption(a));
 
-  const taggedArtistNames = taggedArtists
-    .map((a) => accountDisplayName(a))
-    .filter((v): v is string => Boolean(v));
+  const selectedGroupId = candidate.group_account_id;
 
-  const selectedGroupAccount = groupAccounts.find(
-    (a) => accountDisplayName(a) === candidate.group_name,
-  );
-
-  let groupMemberArtistNames: string[] = [];
-  if (selectedGroupAccount) {
+  let groupMemberArtists: RawInstagramAccount[] = [];
+  if (selectedGroupId) {
     const { data: members, error: membersError } = await db
-      .from("group_member")
+      .from("group_members")
       .select("group_account_id,artist_account_id,is_active")
-      .eq("group_account_id", selectedGroupAccount.id)
+      .eq("group_account_id", selectedGroupId)
       .eq("is_active", true);
     if (membersError) {
-      throw new ApiError(500, dbErrorMessage("group_member query failed", membersError));
+      throw new ApiError(500, dbErrorMessage("group_members query failed", membersError));
     } else {
       const artistIds = ((members ?? []) as RawGroupMember[]).map((row) => row.artist_account_id);
       const artistById = await fetchAccountsByIds(db, artistIds);
-      groupMemberArtistNames = artistIds
+      groupMemberArtists = artistIds
         .map((id) => artistById.get(id))
-        .filter((v): v is RawInstagramAccount => Boolean(v))
-        .map((a) => accountDisplayName(a))
-        .filter((v): v is string => Boolean(v));
+        .filter((v): v is RawInstagramAccount => Boolean(v));
     }
   }
 
-  const artistCandidates = [...new Set([...groupMemberArtistNames, ...taggedArtistNames])];
+  const byId = new Map<string, RawInstagramAccount>();
+  for (const a of [...groupMemberArtists, ...taggedArtists]) {
+    byId.set(a.id, a);
+  }
+  const artistCandidates = [...byId.values()].map((a) => toAccountOption(a));
+
   return {
-    groupCandidates: [...new Set(groupCandidates)],
+    groupCandidates,
     artistCandidates,
   };
 }
 
 export async function setCandidateReviewStatus(
   candidateId: string,
-  status: "approved" | "rejected",
+  outcome: "approved" | "rejected",
   actor: string,
   rejectedReason?: string,
-): Promise<{ id: string; review_status: "approved" | "rejected" }> {
+): Promise<{ id: string; status: SeedPostStatus }> {
   const candidate = await getCandidateById(candidateId);
 
-  if (candidate.review_status !== "draft") {
+  if (candidate.status !== "draft") {
     throw new ApiError(409, "Only draft candidates can be transitioned");
   }
 
-  const supabase = getServerSupabase() as any;
+  const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();
-  const db = supabase.schema(env.WAREHOUSE_DB_SCHEMA);
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
   const now = new Date().toISOString();
 
-  const updatePayload =
-    status === "approved"
-      ? {
-          review_status: "approved",
-          approved_by: actor,
-          approved_at: now,
-          rejected_reason: null,
-          ready_for_backend: true,
-          updated_at: now,
-        }
-      : {
-          review_status: "rejected",
-          approved_by: null,
-          approved_at: null,
-          rejected_reason: rejectedReason?.trim() || null,
-          ready_for_backend: false,
-          updated_at: now,
-        };
+  if (outcome === "approved") {
+    const nextMetadata = mergeMetadata(candidate.metadata, {
+      ops_approved_by: actor,
+      ops_approved_at: now,
+    });
+    const { error } = await db
+      .from("seed_posts")
+      .update({
+        status: "approved",
+        publish_error: null,
+        metadata: nextMetadata,
+        updated_at: now,
+      })
+      .eq("id", candidateId);
+    if (error) throw new ApiError(500, error.message);
+    return { id: candidateId, status: "approved" };
+  }
 
-  const { error } = await db.from("seed_posts").update(updatePayload).eq("id", candidateId);
+  const { error } = await db
+    .from("seed_posts")
+    .update({
+      status: "failed",
+      publish_error: rejectedReason?.trim() || "rejected",
+      metadata: mergeMetadata(candidate.metadata, {
+        ops_rejected_by: actor,
+        ops_rejected_at: now,
+      }),
+      updated_at: now,
+    })
+    .eq("id", candidateId);
   if (error) throw new ApiError(500, error.message);
 
-  return { id: candidateId, review_status: status };
+  return { id: candidateId, status: "failed" };
 }

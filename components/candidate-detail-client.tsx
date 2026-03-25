@@ -2,13 +2,13 @@
 
 import { useState } from "react";
 
-import type { AlternativeImage, SeedLook } from "@/types";
+import type { AlternativeImage, GroupArtistAccountOption, SeedLook } from "@/types";
 
 type Props = {
   candidate: SeedLook;
   alternatives: AlternativeImage[];
-  groupCandidates: string[];
-  artistCandidates: string[];
+  groupCandidates: GroupArtistAccountOption[];
+  artistCandidates: GroupArtistAccountOption[];
 };
 
 export function CandidateDetailClient({
@@ -17,12 +17,17 @@ export function CandidateDetailClient({
   groupCandidates,
   artistCandidates,
 }: Props) {
-  const [urlInput, setUrlInput] = useState(candidate.source_url ?? "");
+  const step1Url =
+    (candidate.media_source && typeof candidate.media_source.source_url === "string"
+      ? candidate.media_source.source_url
+      : null) ?? "";
+  const [urlInput, setUrlInput] = useState(step1Url);
   const [imageUrlInput, setImageUrlInput] = useState("");
-  const [groupNameInput, setGroupNameInput] = useState(candidate.group_name ?? "");
-  const [artistNameInput, setArtistNameInput] = useState(candidate.artist_name ?? "");
+  const [groupAccountIdInput, setGroupAccountIdInput] = useState(candidate.group_account_id ?? "");
+  const [artistAccountIdInput, setArtistAccountIdInput] = useState(candidate.artist_account_id ?? "");
+  const [contextInput, setContextInput] = useState(candidate.context ?? "");
   const [resolvedImageUrl, setResolvedImageUrl] = useState(candidate.image_url);
-  const [rejectReason, setRejectReason] = useState(candidate.rejected_reason ?? "");
+  const [rejectReason, setRejectReason] = useState("");
   const [uploadName, setUploadName] = useState("");
   const [uploadB64, setUploadB64] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,7 +61,7 @@ export function CandidateDetailClient({
   return (
     <div className="card">
       <h2>{candidate.id}</h2>
-      <p>Status: {candidate.review_status}</p>
+      <p>Status: {candidate.status}</p>
       {/* MVP admin view: use native img to preview arbitrary external URLs */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
@@ -70,38 +75,52 @@ export function CandidateDetailClient({
           {candidate.image_url}
         </a>
       </p>
-      <p>Group: {candidate.group_name || "-"}</p>
-      <p>Artist: {candidate.artist_name || "-"}</p>
+      <p>Group: {candidate.group_label || candidate.group_account_id || "-"}</p>
+      <p>Artist: {candidate.artist_label || candidate.artist_account_id || "-"}</p>
+      <p>Context: {candidate.context || "-"}</p>
 
-      <h3>Step0) Group/Artist 확정</h3>
+      <h3>Step0) Group / Artist / Context 확정</h3>
       <div className="row" style={{ marginBottom: 8 }}>
-        <select value={groupNameInput} onChange={(event) => setGroupNameInput(event.target.value)}>
+        <select
+          value={groupAccountIdInput}
+          onChange={(event) => setGroupAccountIdInput(event.target.value)}
+        >
           <option value="">(group 미선택)</option>
-          {groupCandidates.map((name) => (
-            <option key={name} value={name}>
-              {name}
+          {groupCandidates.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.label}
             </option>
           ))}
         </select>
-        <select value={artistNameInput} onChange={(event) => setArtistNameInput(event.target.value)}>
+        <select
+          value={artistAccountIdInput}
+          onChange={(event) => setArtistAccountIdInput(event.target.value)}
+        >
           <option value="">(artist 미선택)</option>
-          {artistCandidates.map((name) => (
-            <option key={name} value={name}>
-              {name}
+          {artistCandidates.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}
             </option>
           ))}
         </select>
+        <input
+          value={contextInput}
+          onChange={(event) => setContextInput(event.target.value)}
+          placeholder="context (mv, stage, …)"
+          style={{ minWidth: 160 }}
+        />
         <button
           disabled={busy}
           onClick={() =>
             request(`/api/candidates/${candidate.id}/source/select`, {
               mode: "group_artist",
-              groupName: groupNameInput || null,
-              artistName: artistNameInput || null,
+              groupAccountId: groupAccountIdInput || null,
+              artistAccountId: artistAccountIdInput || null,
+              context: contextInput.trim() ? contextInput.trim() : null,
             })
           }
         >
-          Group/Artist 저장
+          저장
         </button>
       </div>
 
@@ -133,13 +152,13 @@ export function CandidateDetailClient({
                 })
               }
             >
-              이 이미지로 source 확정
+              이 이미지로 대표 확정
             </button>
           </div>
         ))
       )}
 
-      <h3>Step1) URL source 지정 (출처 링크 저장)</h3>
+      <h3>Step1) URL source 지정 (media_source / 출처 링크)</h3>
       <div className="row">
         <input
           value={urlInput}
@@ -226,7 +245,7 @@ export function CandidateDetailClient({
         <input
           value={rejectReason}
           onChange={(event) => setRejectReason(event.target.value)}
-          placeholder="반려 사유"
+          placeholder="반려 사유 (DB status=failed, publish_error)"
           style={{ minWidth: 260 }}
         />
         <button

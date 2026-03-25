@@ -14,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <main>
           <nav className="row" style={{ marginBottom: 20 }}>
             <Link href="/candidates">Candidates</Link>
+            <Link href="/review">Instagram Review</Link>
           </nav>
           {children}
         </main>

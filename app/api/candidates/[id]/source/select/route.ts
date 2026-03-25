@@ -4,13 +4,19 @@ import { failure, success } from "@/lib/api-response";
 import { selectCandidateSource } from "@/lib/candidates";
 import { ApiError, toApiError } from "@/lib/errors";
 
+const nullableId = z
+  .union([z.string().uuid(), z.literal(""), z.null()])
+  .optional()
+  .transform((v) => (!v || v === "" ? null : v));
+
 const bodySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("alternative"), alternativeImageId: z.string().uuid() }),
   z.object({ mode: z.literal("url"), sourceUrl: z.string().url() }),
   z.object({
     mode: z.literal("group_artist"),
-    groupName: z.string().min(1).nullable(),
-    artistName: z.string().min(1).nullable(),
+    groupAccountId: nullableId,
+    artistAccountId: nullableId,
+    context: z.string().nullable().optional(),
   }),
   z.object({
     mode: z.literal("image_url"),
