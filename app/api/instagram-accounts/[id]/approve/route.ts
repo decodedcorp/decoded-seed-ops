@@ -7,6 +7,7 @@ import { approveInstagramAccount } from "@/lib/instagram-accounts";
 const bodySchema = z.object({
   account_type: z.enum(["artist", "group", "brand", "source", "influencer", "place", "other"]),
   entity_ig_role: z.enum(["primary", "regional", "secondary"]).default("primary"),
+  group_account_id: z.string().uuid().nullable().optional(),
   name_en: z.string().trim().nullable(),
   name_ko: z.string().trim().nullable(),
 });

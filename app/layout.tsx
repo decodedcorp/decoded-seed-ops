@@ -12,9 +12,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <main>
-          <nav className="row" style={{ marginBottom: 20 }}>
-            <Link href="/candidates">Candidates</Link>
-            <Link href="/review">Instagram Review</Link>
+          <nav className="navbar">
+            <Link href="/candidates" className="navbar-link">
+              Post 대표 이미지 선택
+            </Link>
+            <Link href="/review" className="navbar-link">
+              Instagram Account 검증
+            </Link>
+            <Link href="/brands" className="navbar-link">
+              Brands
+            </Link>
+            <Link href="/artists" className="navbar-link">
+              Artists
+            </Link>
+            <Link href="/group-members" className="navbar-link">
+              Group Members
+            </Link>
           </nav>
           {children}
         </main>

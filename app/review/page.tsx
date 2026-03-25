@@ -1,10 +1,13 @@
 import { InstagramReviewTable } from "@/components/instagram-review-table";
-import { getInstagramAccountsForReview } from "@/lib/instagram-accounts";
+import { getApprovedGroupOptions, getInstagramAccountsForReview } from "@/lib/instagram-accounts";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReviewPage() {
-  const accounts = await getInstagramAccountsForReview();
+  const [accounts, groupOptions] = await Promise.all([
+    getInstagramAccountsForReview(),
+    getApprovedGroupOptions(),
+  ]);
 
   return (
     <section>
@@ -14,7 +17,7 @@ export default async function ReviewPage() {
           검수 대기 계정 <strong>{accounts.length}</strong>건
         </p>
       </div>
-      <InstagramReviewTable initialAccounts={accounts} />
+      <InstagramReviewTable initialAccounts={accounts} groupOptions={groupOptions} />
     </section>
   );
 }

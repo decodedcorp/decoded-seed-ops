@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import type { InstagramReviewAccount } from "@/types";
+import type { GroupOption, InstagramReviewAccount } from "@/types";
 
 const ACCOUNT_TYPE_OPTIONS = [
   "artist",
@@ -20,14 +20,19 @@ type EntityIgRoleValue = (typeof ENTITY_IG_ROLE_OPTIONS)[number];
 
 type Props = {
   initialAccounts: InstagramReviewAccount[];
+  groupOptions: GroupOption[];
 };
 
-export function InstagramReviewTable({ initialAccounts }: Props) {
+export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
   const [accounts, setAccounts] = useState(initialAccounts);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  function updateAccountField(accountId: string, field: "name_en" | "name_ko", value: string) {
+  function updateAccountField(
+    accountId: string,
+    field: "name_en" | "name_ko" | "group_account_id",
+    value: string,
+  ) {
     setAccounts((prev) =>
       prev.map((account) => (account.id === accountId ? { ...account, [field]: value || null } : account)),
     );
@@ -70,6 +75,7 @@ export function InstagramReviewTable({ initialAccounts }: Props) {
         body: JSON.stringify({
           account_type: target.account_type,
           entity_ig_role: target.entity_ig_role ?? "primary",
+          group_account_id: target.group_account_id ?? null,
           name_en: target.name_en?.trim() || null,
           name_ko: target.name_ko?.trim() || null,
         }),
@@ -105,6 +111,7 @@ export function InstagramReviewTable({ initialAccounts }: Props) {
           <tr>
             <th>account_id</th>
             <th>group_name</th>
+            <th>group_select</th>
             <th>display_name</th>
             <th>name_en</th>
             <th>name_ko</th>
@@ -132,6 +139,27 @@ export function InstagramReviewTable({ initialAccounts }: Props) {
                   )}
                 </td>
                 <td>{account.group_name || "-"}</td>
+                <td>
+                  {account.account_type === "artist" ? (
+                    <select
+                      value={account.group_account_id ?? ""}
+                      disabled={busyId === account.id}
+                      onChange={(event) =>
+                        updateAccountField(account.id, "group_account_id", event.target.value)
+                      }
+                      className="review-select"
+                    >
+                      <option value="">(group 미선택)</option>
+                      {groupOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    "-"
+                  )}
+                </td>
                 <td>{account.display_name || "-"}</td>
                 <td>
                   <input

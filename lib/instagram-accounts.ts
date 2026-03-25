@@ -1,7 +1,7 @@
 import { ApiError } from "@/lib/errors";
 import { getServerEnv } from "@/lib/env";
 import { getServerSupabase } from "@/lib/supabase/server";
-import type { InstagramReviewAccount } from "@/types";
+import type { GroupOption, InstagramReviewAccount } from "@/types";
 
 type DbErrorLike = { message: string; code?: string; details?: string; hint?: string };
 
@@ -43,6 +43,7 @@ type ApprovalAccountType =
 type ApproveInstagramAccountInput = {
   account_type: ApprovalAccountType;
   entity_ig_role: "primary" | "regional" | "secondary";
+  group_account_id?: string | null;
   name_en: string | null;
   name_ko: string | null;
 };
@@ -62,6 +63,7 @@ function mapReviewAccount(row: RawInstagramAccountReviewRow): InstagramReviewAcc
   return {
     id: row.id,
     account_id: row.username,
+    group_account_id: null,
     group_name: null,
     display_name: row.display_name,
     name_en: row.name_en,
@@ -77,6 +79,29 @@ function mapReviewAccount(row: RawInstagramAccountReviewRow): InstagramReviewAcc
 
 function groupDisplayName(account: RawGroupAccountRow): string {
   return account.display_name || account.name_en || account.name_ko || account.username || account.id;
+}
+
+export async function getApprovedGroupOptions(): Promise<GroupOption[]> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+
+  const { data, error } = await db
+    .from("instagram_accounts")
+    .select("id,username,display_name,name_en,name_ko")
+    .eq("account_type", "group")
+    .eq("needs_review", false)
+    .eq("is_active", true)
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    throw new ApiError(500, dbErrorMessage("approved group options query failed", error));
+  }
+
+  return ((data ?? []) as RawGroupAccountRow[]).map((row) => ({
+    id: row.id,
+    label: groupDisplayName(row),
+  }));
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -233,8 +258,10 @@ export async function getInstagramAccountsForReview(): Promise<InstagramReviewAc
 
   return reviewAccounts.map((account) => {
     const groups = groupNamesByArtistId.get(account.id);
+    const matched = memberRows.find((row) => row.artist_account_id === account.id);
     return {
       ...account,
+      group_account_id: matched?.group_account_id ?? null,
       group_name: groups && groups.size > 0 ? [...groups].join(", ") : null,
     };
   });
@@ -267,6 +294,7 @@ export async function approveInstagramAccount(
   const now = new Date().toISOString();
   const accountType: ApprovalAccountType = input.account_type;
   const entityIgRole = input.entity_ig_role;
+  const selectedGroupAccountId = input.group_account_id ?? null;
   const nameEn = input.name_en;
   const nameKo = input.name_ko;
 
@@ -302,6 +330,21 @@ export async function approveInstagramAccount(
   const { error: updateError } = await db.from("instagram_accounts").update(updatePayload).eq("id", account.id);
   if (updateError) {
     throw new ApiError(500, dbErrorMessage("instagram_accounts approve update failed", updateError));
+  }
+
+  if (accountType === "artist" && selectedGroupAccountId) {
+    const { error: memberError } = await db.from("group_members").upsert(
+      {
+        group_account_id: selectedGroupAccountId,
+        artist_account_id: account.id,
+        is_active: true,
+        updated_at: now,
+      },
+      { onConflict: "group_account_id,artist_account_id" },
+    );
+    if (memberError) {
+      throw new ApiError(500, dbErrorMessage("group_members upsert failed", memberError));
+    }
   }
 
   return {

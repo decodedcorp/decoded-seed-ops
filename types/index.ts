@@ -38,6 +38,7 @@ export type GroupArtistOptions = {
 export type InstagramReviewAccount = {
   id: string;
   account_id: string | null;
+  group_account_id: string | null;
   group_name: string | null;
   display_name: string | null;
   name_en: string | null;
@@ -48,4 +49,51 @@ export type InstagramReviewAccount = {
   needs_review: boolean | null;
   brand_id: string | null;
   artist_id: string | null;
+};
+
+export type GroupOption = {
+  id: string;
+  label: string;
+};
+
+export type BrandSummary = {
+  id: string;
+  name_en: string | null;
+  name_ko: string | null;
+  logo_image_url: string | null;
+  primary_instagram_account_id: string | null;
+  primary_account_username: string | null;
+  primary_account_label: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ArtistSummary = {
+  id: string;
+  name_en: string | null;
+  name_ko: string | null;
+  profile_image_url: string | null;
+  primary_instagram_account_id: string | null;
+  primary_account_username: string | null;
+  primary_account_label: string | null;
+  group_names: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type GroupMemberSummary = {
+  id: string;
+  username: string | null;
+  display_name: string | null;
+  name_en: string | null;
+  name_ko: string | null;
+  account_type: string | null;
+  profile_image_url: string | null;
+};
+
+export type GroupMembersByGroup = {
+  group_id: string;
+  group_username: string | null;
+  group_label: string;
+  members: GroupMemberSummary[];
 };
