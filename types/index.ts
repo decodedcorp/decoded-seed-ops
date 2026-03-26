@@ -38,7 +38,7 @@ export type GroupArtistOptions = {
 export type InstagramReviewAccount = {
   id: string;
   account_id: string | null;
-  group_account_id: string | null;
+  group_id: string | null;
   group_name: string | null;
   display_name: string | null;
   name_en: string | null;

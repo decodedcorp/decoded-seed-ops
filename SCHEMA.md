@@ -1,6 +1,6 @@
 # SCHEMA.md - DECODED warehouse 데이터베이스 스키마
 
-**Version:** 1.2.0  
+**Version:** 1.3.0  
 **Last Updated:** 2026.03.21
 **Parent Document:** [REQUIREMENT.md](./REQUIREMENT.md)
 
@@ -24,8 +24,9 @@
 본 문서 기준 스키마 원칙:
 
 - `warehouse.posts`, `warehouse.images`는 Instagram 원천(raw) 데이터
-- `warehouse.instagram_accounts`, `warehouse.group_members`는 계정 마스터/관계(raw+curation) 데이터
-- `warehouse.brands`, `warehouse.artists`는 유저 노출용 논리 엔티티(로고·프로필·대표 IG); 소속 IG 행은 `instagram_accounts.brand_id` / `artist_id`로 묶임
+- `warehouse.instagram_accounts`는 계정 마스터(raw+curation); `brand_id` / `artist_id`로 엔티티 소속. 그룹 공식 계정은 `groups.primary_instagram_account_id` 역참조(`05`; `instagram_accounts.group_id` 없음)
+- `warehouse.brands`, `warehouse.artists`, `warehouse.groups`는 유저 노출용 논리 엔티티(이름·이미지·대표 IG)
+- `warehouse.group_members`는 **엔티티** 멤버십 (`groups.id` ↔ `artists.id`; `05` 이후 Instagram account id 미사용)
 - `warehouse.seed_posts`, `warehouse.seed_spots`, `warehouse.seed_solutions`는 배포 준비(seed) 데이터
 - `seed`는 backend API 호출 단위를 기준으로 구성
 
@@ -59,12 +60,13 @@
     - `null`: Sync 등으로 row만 생긴 직후, 또는 `name_en`/`name_ko` 보강(위키 등) **이전**
     - `true`: 보강 워크플로 이후 **검수 대기** (대시보드 큐)
     - `false`: 검수 **완료**
-  - `brand_id` (uuid, nullable, FK → `warehouse.brands.id`) — Dashboard 승인 후 소속 브랜드
-  - `artist_id` (uuid, nullable, FK → `warehouse.artists.id`) — Dashboard 승인 후 소속 아티스트
-  - `entity_ig_role` (enum `warehouse.entity_ig_role`, nullable) — 소속이 있을 때 필수: `primary` / `regional` / `secondary`
+  - `brand_id` (uuid, nullable, FK → `warehouse.brands.id`) — 소속 브랜드
+  - `artist_id` (uuid, nullable, FK → `warehouse.artists.id`) — 소속 아티스트
+  - `entity_ig_role` (enum `warehouse.entity_ig_role`, nullable) — `brand_id` 또는 `artist_id`가 있으면 필수: `primary` / `regional` / `secondary`
   - `entity_region_code` (text, nullable) — 지역 공식 계정 등 (예: ISO 3166-1 alpha-2)
-  - 체크: `brand_id`와 `artist_id` 동시 non-null 불가; 둘 중 하나라도 있으면 `entity_ig_role` not null
-  - 부분 유니크: 브랜드(아티스트)당 `entity_ig_role = primary`인 IG 행은 최대 1개
+  - 체크(`04`): `brand_id`와 `artist_id` 동시 non-null 불가; 둘 중 하나라도 있으면 `entity_ig_role` not null
+  - 부분 유니크(`04`): 브랜드·아티스트 각각당 `entity_ig_role = primary`인 IG 행은 최대 1개
+  - 그룹 엔티티와의 연결: `warehouse.groups.primary_instagram_account_id` → 이 테이블 `id` (`group_id` 컬럼 없음)
   - `created_at`, `updated_at` (timestamptz)
 
 #### `warehouse.entity_ig_role` (enum)
@@ -99,19 +101,30 @@
 - 트리거: `touch_updated_at()`
 - RLS: enabled
 
+#### `warehouse.groups`
+
+- 목적: 그룹(팀) 엔티티; 아티스트 엔티티와 동일 패턴
+- 주요 컬럼:
+  - `id` (uuid, PK)
+  - `name_ko`, `name_en` (text, nullable)
+  - `profile_image_url` (text, nullable)
+  - `primary_instagram_account_id` (uuid, nullable, FK → `warehouse.instagram_accounts.id`, on delete set null)
+  - `metadata` (jsonb, nullable)
+  - `created_at`, `updated_at` (timestamptz)
+- 부분 유니크: `primary_instagram_account_id` non-null 시 전역 유일
+- 트리거: `touch_updated_at()`
+- RLS: enabled
+
 #### `warehouse.group_members`
 
-- 목적: group - artist 멤버십 관계 저장
-- 주요 컬럼(합의 반영):
-  - `group_account_id` (uuid, PK part, FK to `warehouse.instagram_accounts.id`)
-  - `artist_account_id` (uuid, PK part, FK to `warehouse.instagram_accounts.id`)
+- 목적: **그룹 엔티티 ↔ 아티스트 엔티티** 멤버십 (`05_warehouse_groups_entity.sql`)
+- 주요 컬럼:
+  - `group_id` (uuid, PK part, FK → `warehouse.groups.id`, on delete cascade)
+  - `artist_id` (uuid, PK part, FK → `warehouse.artists.id`, on delete cascade)
   - `is_active` (bool, default true)
   - `metadata` (jsonb, nullable)
   - `created_at`, `updated_at` (timestamptz)
-- 체크 제약:
-  - `group_account_id <> artist_account_id`
-- 트리거:
-  - `touch_updated_at()`
+- 트리거: `touch_updated_at()`
 
 #### `warehouse.images`
 
@@ -216,13 +229,15 @@
   - `brand_id`, `artist_id` (partial btree, non-null 시)
   - 부분 유니크: `(brand_id)` where `entity_ig_role = primary`
   - 부분 유니크: `(artist_id)` where `entity_ig_role = primary`
+- `warehouse.groups`
+  - 부분 유니크: `primary_instagram_account_id` (non-null)
 - `warehouse.brands`
   - 부분 유니크: `primary_instagram_account_id` (non-null)
 - `warehouse.artists`
   - 부분 유니크: `primary_instagram_account_id` (non-null)
 - `warehouse.group_members`
-  - `(group_account_id, artist_account_id)` PK
-  - `artist_account_id`
+  - `(group_id, artist_id)` PK
+  - `artist_id`
   - `is_active`
 - `warehouse.images`
   - `(post_id, image_hash)` unique
@@ -258,7 +273,7 @@
 
 권장 설정:
 
-1. `warehouse` 모든 테이블에 `enable row level security` (`brands`, `artists` 포함)
+1. `warehouse` 모든 테이블에 `enable row level security` (`brands`, `artists`, `groups` 포함)
 2. `anon`, `authenticated` 대상 정책 생성하지 않음 (또는 `using (false)`)
 3. dashboard/백엔드는 service role 또는 server-side privileged role로만 접근
 4. 클라이언트 앱에서 `warehouse` direct read/write 금지
@@ -271,3 +286,4 @@
 > - `02_warehouse_fk_indexes.sql`: FK + index + constraint + `touch_updated_at`
 > - `03_warehouse_rls.sql`: RLS + grants/revoke + policy
 > - `04_warehouse_brands_artists.sql`: `brands`, `artists`, `instagram_accounts` 소속 컬럼 + enum `entity_ig_role`
+> - `05_warehouse_groups_entity.sql`: `groups` 생성·백필(IG `primary`+`group`), `group_members`를 `(groups.id, artists.id)`로 교체 및 레거시 이관

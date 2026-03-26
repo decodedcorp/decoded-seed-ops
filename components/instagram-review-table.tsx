@@ -30,7 +30,7 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
 
   function updateAccountField(
     accountId: string,
-    field: "name_en" | "name_ko" | "group_account_id",
+    field: "name_en" | "name_ko" | "group_id",
     value: string,
   ) {
     setAccounts((prev) =>
@@ -75,7 +75,7 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
         body: JSON.stringify({
           account_type: target.account_type,
           entity_ig_role: target.entity_ig_role ?? "primary",
-          group_account_id: target.group_account_id ?? null,
+          group_id: target.group_id ?? null,
           name_en: target.name_en?.trim() || null,
           name_ko: target.name_ko?.trim() || null,
         }),
@@ -142,11 +142,9 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
                 <td>
                   {account.account_type === "artist" ? (
                     <select
-                      value={account.group_account_id ?? ""}
+                      value={account.group_id ?? ""}
                       disabled={busyId === account.id}
-                      onChange={(event) =>
-                        updateAccountField(account.id, "group_account_id", event.target.value)
-                      }
+                      onChange={(event) => updateAccountField(account.id, "group_id", event.target.value)}
                       className="review-select"
                     >
                       <option value="">(group 미선택)</option>

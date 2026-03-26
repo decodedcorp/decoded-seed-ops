@@ -23,7 +23,8 @@ type RawInstagramAccount = {
   name_ko: string | null;
   account_type: string | null;
 };
-type RawGroupMember = { group_account_id: string; artist_account_id: string; is_active: boolean };
+type RawGroupMember = { group_id: string; artist_id: string; is_active: boolean };
+type RawArtistEntity = { id: string; primary_instagram_account_id: string | null };
 
 type SourceSelectInput =
   | { mode: "alternative"; alternativeImageId: string }
@@ -713,19 +714,43 @@ export async function getGroupArtistOptionsForCandidate(candidateId: string): Pr
 
   let groupMemberArtists: RawInstagramAccount[] = [];
   if (selectedGroupId) {
-    const { data: members, error: membersError } = await db
-      .from("group_members")
-      .select("group_account_id,artist_account_id,is_active")
-      .eq("group_account_id", selectedGroupId)
-      .eq("is_active", true);
-    if (membersError) {
-      throw new ApiError(500, dbErrorMessage("group_members query failed", membersError));
-    } else {
-      const artistIds = ((members ?? []) as RawGroupMember[]).map((row) => row.artist_account_id);
-      const artistById = await fetchAccountsByIds(db, artistIds);
-      groupMemberArtists = artistIds
-        .map((id) => artistById.get(id))
-        .filter((v): v is RawInstagramAccount => Boolean(v));
+    const { data: groupEntity, error: groupEntityError } = await db
+      .from("groups")
+      .select("id")
+      .eq("primary_instagram_account_id", selectedGroupId)
+      .limit(1)
+      .maybeSingle();
+    if (groupEntityError) {
+      throw new ApiError(500, dbErrorMessage("groups lookup failed", groupEntityError));
+    }
+
+    if (groupEntity?.id) {
+      const { data: members, error: membersError } = await db
+        .from("group_members")
+        .select("group_id,artist_id,is_active")
+        .eq("group_id", groupEntity.id)
+        .eq("is_active", true);
+      if (membersError) {
+        throw new ApiError(500, dbErrorMessage("group_members query failed", membersError));
+      } else {
+        const artistEntityIds = ((members ?? []) as RawGroupMember[]).map((row) => row.artist_id);
+        if (artistEntityIds.length) {
+          const { data: artists, error: artistsError } = await db
+            .from("artists")
+            .select("id,primary_instagram_account_id")
+            .in("id", artistEntityIds);
+          if (artistsError) {
+            throw new ApiError(500, dbErrorMessage("artists query failed", artistsError));
+          }
+          const artistAccountIds = ((artists ?? []) as RawArtistEntity[])
+            .map((row) => row.primary_instagram_account_id)
+            .filter((value): value is string => Boolean(value));
+          const artistById = await fetchAccountsByIds(db, artistAccountIds);
+          groupMemberArtists = artistAccountIds
+            .map((id) => artistById.get(id))
+            .filter((v): v is RawInstagramAccount => Boolean(v));
+        }
+      }
     }
   }
 

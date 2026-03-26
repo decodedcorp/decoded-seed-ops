@@ -19,8 +19,8 @@ type RawInstagramAccountReviewRow = {
   artist_id: string | null;
 };
 type RawGroupMemberRow = {
-  group_account_id: string;
-  artist_account_id: string;
+  group_id: string;
+  artist_id: string;
   is_active: boolean | null;
 };
 type RawGroupAccountRow = {
@@ -43,7 +43,7 @@ type ApprovalAccountType =
 type ApproveInstagramAccountInput = {
   account_type: ApprovalAccountType;
   entity_ig_role: "primary" | "regional" | "secondary";
-  group_account_id?: string | null;
+  group_id?: string | null;
   name_en: string | null;
   name_ko: string | null;
 };
@@ -63,7 +63,7 @@ function mapReviewAccount(row: RawInstagramAccountReviewRow): InstagramReviewAcc
   return {
     id: row.id,
     account_id: row.username,
-    group_account_id: null,
+    group_id: null,
     group_name: null,
     display_name: row.display_name,
     name_en: row.name_en,
@@ -86,22 +86,53 @@ export async function getApprovedGroupOptions(): Promise<GroupOption[]> {
   const env = getServerEnv();
   const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
-  const { data, error } = await db
-    .from("instagram_accounts")
-    .select("id,username,display_name,name_en,name_ko")
-    .eq("account_type", "group")
-    .eq("needs_review", false)
-    .eq("is_active", true)
+  const { data: groupRows, error: groupsError } = await db
+    .from("groups")
+    .select("id,primary_instagram_account_id,name_en,name_ko")
     .order("updated_at", { ascending: false });
-
-  if (error) {
-    throw new ApiError(500, dbErrorMessage("approved group options query failed", error));
+  if (groupsError) {
+    throw new ApiError(500, dbErrorMessage("groups query failed", groupsError));
   }
 
-  return ((data ?? []) as RawGroupAccountRow[]).map((row) => ({
-    id: row.id,
-    label: groupDisplayName(row),
-  }));
+  const groups = (groupRows ?? []) as Array<{
+    id: string;
+    primary_instagram_account_id: string | null;
+    name_en: string | null;
+    name_ko: string | null;
+  }>;
+  const primaryIds = groups
+    .map((row) => row.primary_instagram_account_id)
+    .filter((value): value is string => Boolean(value));
+  if (!primaryIds.length) return [];
+
+  const primaryAccounts: RawGroupAccountRow[] = [];
+  for (const idChunk of chunkArray([...new Set(primaryIds)], 100)) {
+    const { data, error } = await db
+      .from("instagram_accounts")
+      .select("id,username,display_name,name_en,name_ko")
+      .in("id", idChunk)
+      .eq("account_type", "group")
+      .eq("needs_review", false)
+      .eq("is_active", true);
+    if (error) {
+      throw new ApiError(500, dbErrorMessage("approved group accounts query failed", error));
+    }
+    primaryAccounts.push(...((data ?? []) as RawGroupAccountRow[]));
+  }
+
+  const primaryById = new Map(primaryAccounts.map((row) => [row.id, row]));
+  return groups
+    .map((group) => {
+      const account = group.primary_instagram_account_id
+        ? primaryById.get(group.primary_instagram_account_id)
+        : undefined;
+      if (!account) return null;
+      return {
+        id: group.id,
+        label: group.name_en || group.name_ko || groupDisplayName(account),
+      };
+    })
+    .filter((value): value is GroupOption => Boolean(value));
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -217,13 +248,21 @@ export async function getInstagramAccountsForReview(): Promise<InstagramReviewAc
   const reviewAccounts = ((data ?? []) as RawInstagramAccountReviewRow[]).map((row) => mapReviewAccount(row));
   if (!reviewAccounts.length) return reviewAccounts;
 
-  const artistAccountIds = [...new Set(reviewAccounts.map((account) => account.id))];
+  const artistEntityIds = [
+    ...new Set(
+      reviewAccounts
+        .map((account) => account.artist_id)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  if (!artistEntityIds.length) return reviewAccounts;
+
   const memberRows: RawGroupMemberRow[] = [];
-  for (const artistIdChunk of chunkArray(artistAccountIds, 100)) {
+  for (const artistIdChunk of chunkArray(artistEntityIds, 100)) {
     const { data: groupMembers, error: membersError } = await db
       .from("group_members")
-      .select("group_account_id,artist_account_id,is_active")
-      .in("artist_account_id", artistIdChunk)
+      .select("group_id,artist_id,is_active")
+      .in("artist_id", artistIdChunk)
       .eq("is_active", true);
     if (membersError) {
       throw new ApiError(500, dbErrorMessage("group_members query failed", membersError));
@@ -232,36 +271,38 @@ export async function getInstagramAccountsForReview(): Promise<InstagramReviewAc
   }
   if (!memberRows.length) return reviewAccounts;
 
-  const groupIds = [...new Set(memberRows.map((row) => row.group_account_id))];
-  const groupRows: RawGroupAccountRow[] = [];
+  const groupIds = [...new Set(memberRows.map((row) => row.group_id))];
+  const groupRows: Array<{ id: string; name_en: string | null; name_ko: string | null }> = [];
   for (const groupIdChunk of chunkArray(groupIds, 100)) {
     const { data: groups, error: groupsError } = await db
-      .from("instagram_accounts")
-      .select("id,username,display_name,name_en,name_ko")
+      .from("groups")
+      .select("id,name_en,name_ko")
       .in("id", groupIdChunk);
     if (groupsError) {
       throw new ApiError(500, dbErrorMessage("group account query failed", groupsError));
     }
-    groupRows.push(...((groups ?? []) as RawGroupAccountRow[]));
+    groupRows.push(...((groups ?? []) as Array<{ id: string; name_en: string | null; name_ko: string | null }>));
   }
 
-  const groupLabelById = new Map(groupRows.map((row) => [row.id, groupDisplayName(row)]));
+  const groupLabelById = new Map(
+    groupRows.map((row) => [row.id, row.name_en || row.name_ko || row.id]),
+  );
   const groupNamesByArtistId = new Map<string, Set<string>>();
 
   for (const member of memberRows) {
-    const groupName = groupLabelById.get(member.group_account_id);
+    const groupName = groupLabelById.get(member.group_id);
     if (!groupName) continue;
-    const set = groupNamesByArtistId.get(member.artist_account_id) ?? new Set<string>();
+    const set = groupNamesByArtistId.get(member.artist_id) ?? new Set<string>();
     set.add(groupName);
-    groupNamesByArtistId.set(member.artist_account_id, set);
+    groupNamesByArtistId.set(member.artist_id, set);
   }
 
   return reviewAccounts.map((account) => {
-    const groups = groupNamesByArtistId.get(account.id);
-    const matched = memberRows.find((row) => row.artist_account_id === account.id);
+    const groups = account.artist_id ? groupNamesByArtistId.get(account.artist_id) : undefined;
+    const matched = account.artist_id ? memberRows.find((row) => row.artist_id === account.artist_id) : undefined;
     return {
       ...account,
-      group_account_id: matched?.group_account_id ?? null,
+      group_id: matched?.group_id ?? null,
       group_name: groups && groups.size > 0 ? [...groups].join(", ") : null,
     };
   });
@@ -294,7 +335,7 @@ export async function approveInstagramAccount(
   const now = new Date().toISOString();
   const accountType: ApprovalAccountType = input.account_type;
   const entityIgRole = input.entity_ig_role;
-  const selectedGroupAccountId = input.group_account_id ?? null;
+  const selectedGroupId = input.group_id ?? null;
   const nameEn = input.name_en;
   const nameKo = input.name_ko;
 
@@ -332,15 +373,42 @@ export async function approveInstagramAccount(
     throw new ApiError(500, dbErrorMessage("instagram_accounts approve update failed", updateError));
   }
 
-  if (accountType === "artist" && selectedGroupAccountId) {
+  if (accountType === "group" && entityIgRole === "primary") {
+    const { data: existing, error: lookupError } = await db
+      .from("groups")
+      .select("id")
+      .eq("primary_instagram_account_id", account.id)
+      .limit(1)
+      .maybeSingle();
+    if (lookupError) throw new ApiError(500, dbErrorMessage("groups lookup failed", lookupError));
+
+    const payload = {
+      name_en: nameEn,
+      name_ko: nameKo,
+      profile_image_url: account.profile_image_url,
+      primary_instagram_account_id: account.id,
+      updated_at: now,
+    };
+
+    if (existing?.id) {
+      const { error: updateError } = await db.from("groups").update(payload).eq("id", existing.id);
+      if (updateError) throw new ApiError(500, dbErrorMessage("groups update failed", updateError));
+    } else {
+      const { error: insertError } = await db.from("groups").insert(payload);
+      if (insertError) throw new ApiError(500, dbErrorMessage("groups insert failed", insertError));
+    }
+  }
+
+  const targetArtistId = artistId ?? account.artist_id;
+  if (accountType === "artist" && selectedGroupId && targetArtistId) {
     const { error: memberError } = await db.from("group_members").upsert(
       {
-        group_account_id: selectedGroupAccountId,
-        artist_account_id: account.id,
+        group_id: selectedGroupId,
+        artist_id: targetArtistId,
         is_active: true,
         updated_at: now,
       },
-      { onConflict: "group_account_id,artist_account_id" },
+      { onConflict: "group_id,artist_id" },
     );
     if (memberError) {
       throw new ApiError(500, dbErrorMessage("group_members upsert failed", memberError));

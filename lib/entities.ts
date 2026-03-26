@@ -41,8 +41,8 @@ type RawInstagramAccountLite = {
 };
 
 type RawGroupMemberRow = {
-  group_account_id: string;
-  artist_account_id: string;
+  group_id: string;
+  artist_id: string;
   is_active: boolean | null;
 };
 
@@ -153,38 +153,46 @@ export async function getArtistsSummary(searchTerm?: string): Promise<ArtistSumm
     .map((row) => row.primary_instagram_account_id)
     .filter((id): id is string => Boolean(id));
   const accountById = await getAccountMapByIds(db, primaryIds);
+  const artistEntityIds = artists.map((row) => row.id);
   const memberRows: RawGroupMemberRow[] = [];
-  for (const chunk of chunkArray(primaryIds, 100)) {
+  for (const chunk of chunkArray(artistEntityIds, 100)) {
     const { data: members, error: membersError } = await db
       .from("group_members")
-      .select("group_account_id,artist_account_id,is_active")
-      .in("artist_account_id", chunk)
+      .select("group_id,artist_id,is_active")
+      .in("artist_id", chunk)
       .eq("is_active", true);
     if (membersError) {
       throw new ApiError(500, dbErrorMessage("group_members query failed", membersError));
     }
     memberRows.push(...((members ?? []) as RawGroupMemberRow[]));
   }
-  const groupIds = [...new Set(memberRows.map((row) => row.group_account_id))];
-  const groupById = await getAccountMapByIds(db, groupIds);
+  const groupIds = [...new Set(memberRows.map((row) => row.group_id))];
+  const { data: groupsData, error: groupsError } = await db
+    .from("groups")
+    .select("id,name_en,name_ko")
+    .in("id", groupIds);
+  if (groupsError) throw new ApiError(500, dbErrorMessage("groups query failed", groupsError));
+  const groupLabelById = new Map(
+    ((groupsData ?? []) as Array<{ id: string; name_en: string | null; name_ko: string | null }>).map((row) => [
+      row.id,
+      row.name_en || row.name_ko || row.id,
+    ]),
+  );
 
   const groupNamesByArtistAccountId = new Map<string, string[]>();
   for (const member of memberRows) {
-    const group = groupById.get(member.group_account_id);
-    const label = group ? accountLabel(group) : null;
+    const label = groupLabelById.get(member.group_id);
     if (!label) continue;
-    const prev = groupNamesByArtistAccountId.get(member.artist_account_id) ?? [];
+    const prev = groupNamesByArtistAccountId.get(member.artist_id) ?? [];
     if (!prev.includes(label)) prev.push(label);
-    groupNamesByArtistAccountId.set(member.artist_account_id, prev);
+    groupNamesByArtistAccountId.set(member.artist_id, prev);
   }
 
   const mapped = artists.map((row) => {
     const account = row.primary_instagram_account_id
       ? accountById.get(row.primary_instagram_account_id)
       : undefined;
-    const groupNames = row.primary_instagram_account_id
-      ? (groupNamesByArtistAccountId.get(row.primary_instagram_account_id) ?? [])
-      : [];
+    const groupNames = groupNamesByArtistAccountId.get(row.id) ?? [];
     return {
       id: row.id,
       name_en: row.name_en,
@@ -218,27 +226,82 @@ export async function getGroupMembersByGroup(searchTerm?: string): Promise<Group
   const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
   const { data: groupsData, error: groupsError } = await db
+    .from("groups")
+    .select("id,name_en,name_ko,primary_instagram_account_id")
+    .order("updated_at", { ascending: false });
+  if (groupsError) {
+    throw new ApiError(500, dbErrorMessage("groups query failed", groupsError));
+  }
+
+  const groupsRaw = (groupsData ?? []) as Array<{
+    id: string;
+    name_en: string | null;
+    name_ko: string | null;
+    primary_instagram_account_id: string | null;
+  }>;
+  const primaryAccountIds = groupsRaw
+    .map((row) => row.primary_instagram_account_id)
+    .filter((value): value is string => Boolean(value));
+  const primaryAccountsMap = await getAccountMapByIds(db, primaryAccountIds);
+
+  const groups = groupsRaw
+    .map((row) => {
+      const primaryAccount = row.primary_instagram_account_id
+        ? primaryAccountsMap.get(row.primary_instagram_account_id)
+        : undefined;
+      if (!primaryAccount) return null;
+      if (
+        primaryAccount.account_type !== "group" ||
+        !primaryAccount.id ||
+        !primaryAccount.username
+      ) {
+        return null;
+      }
+      return {
+        id: row.id,
+        group_username: primaryAccount.username,
+        group_label: row.name_en || row.name_ko || accountLabel(primaryAccount) || row.id,
+        primary_instagram_account_id: primaryAccount.id,
+      };
+    })
+    .filter(
+      (
+        value,
+      ): value is {
+        id: string;
+        group_username: string;
+        group_label: string;
+        primary_instagram_account_id: string;
+      } => Boolean(value),
+    );
+
+  if (!groups.length) return [];
+
+  const validPrimaryIds = groups.map((group) => group.primary_instagram_account_id);
+  const { data: validPrimaryRows, error: primaryFilterError } = await db
     .from("instagram_accounts")
-    .select("id,username,display_name,name_en,name_ko")
+    .select("id,needs_review,entity_ig_role,account_type,is_active")
+    .in("id", validPrimaryIds)
     .eq("account_type", "group")
     .eq("needs_review", false)
     .eq("entity_ig_role", "primary")
-    .eq("is_active", true)
-    .order("updated_at", { ascending: false });
-  if (groupsError) {
-    throw new ApiError(500, dbErrorMessage("group accounts query failed", groupsError));
+    .eq("is_active", true);
+  if (primaryFilterError) {
+    throw new ApiError(500, dbErrorMessage("primary group account filter failed", primaryFilterError));
   }
+  const validPrimarySet = new Set(((validPrimaryRows ?? []) as Array<{ id: string }>).map((row) => row.id));
+  const filteredGroups = groups.filter((group) => {
+    return validPrimarySet.has(group.primary_instagram_account_id);
+  });
+  if (!filteredGroups.length) return [];
 
-  const groups = (groupsData ?? []) as RawInstagramAccountLite[];
-  if (!groups.length) return [];
-
-  const groupIds = groups.map((group) => group.id);
+  const groupIds = filteredGroups.map((group) => group.id);
   const memberRows: RawGroupMemberRow[] = [];
   for (const chunk of chunkArray(groupIds, 100)) {
     const { data: members, error: membersError } = await db
       .from("group_members")
-      .select("group_account_id,artist_account_id,is_active")
-      .in("group_account_id", chunk)
+      .select("group_id,artist_id,is_active")
+      .in("group_id", chunk)
       .eq("is_active", true);
     if (membersError) {
       throw new ApiError(500, dbErrorMessage("group_members by group query failed", membersError));
@@ -246,30 +309,49 @@ export async function getGroupMembersByGroup(searchTerm?: string): Promise<Group
     memberRows.push(...((members ?? []) as RawGroupMemberRow[]));
   }
 
-  const memberIds = [...new Set(memberRows.map((row) => row.artist_account_id))];
-  const memberById = await getAccountMapByIds(db, memberIds);
+  const memberIds = [...new Set(memberRows.map((row) => row.artist_id))];
+  const { data: artistRows, error: artistsError } = await db
+    .from("artists")
+    .select("id,name_en,name_ko,profile_image_url,primary_instagram_account_id")
+    .in("id", memberIds);
+  if (artistsError) throw new ApiError(500, dbErrorMessage("artists lookup failed", artistsError));
+  const artists = (artistRows ?? []) as Array<{
+    id: string;
+    name_en: string | null;
+    name_ko: string | null;
+    profile_image_url: string | null;
+    primary_instagram_account_id: string | null;
+  }>;
+  const artistPrimaryIds = artists
+    .map((row) => row.primary_instagram_account_id)
+    .filter((value): value is string => Boolean(value));
+  const artistPrimaryById = await getAccountMapByIds(db, artistPrimaryIds);
+  const artistById = new Map(artists.map((row) => [row.id, row]));
 
   const membersByGroup = new Map<string, GroupMemberSummary[]>();
   for (const row of memberRows) {
-    const member = memberById.get(row.artist_account_id);
+    const member = artistById.get(row.artist_id);
     if (!member) continue;
-    const arr = membersByGroup.get(row.group_account_id) ?? [];
+    const primary = member.primary_instagram_account_id
+      ? artistPrimaryById.get(member.primary_instagram_account_id)
+      : undefined;
+    const arr = membersByGroup.get(row.group_id) ?? [];
     arr.push({
       id: member.id,
-      username: member.username ?? null,
-      display_name: member.display_name ?? null,
+      username: primary?.username ?? null,
+      display_name: primary?.display_name ?? null,
       name_en: member.name_en ?? null,
       name_ko: member.name_ko ?? null,
-      account_type: member.account_type ?? null,
+      account_type: "artist",
       profile_image_url: member.profile_image_url ?? null,
     });
-    membersByGroup.set(row.group_account_id, arr);
+    membersByGroup.set(row.group_id, arr);
   }
 
-  let mapped: GroupMembersByGroup[] = groups.map((group) => ({
+  let mapped: GroupMembersByGroup[] = filteredGroups.map((group) => ({
     group_id: group.id,
-    group_username: group.username ?? null,
-    group_label: accountLabel(group) || group.id,
+    group_username: group.group_username,
+    group_label: group.group_label,
     members: membersByGroup.get(group.id) ?? [],
   }));
 
@@ -290,4 +372,78 @@ export async function getGroupMembersByGroup(searchTerm?: string): Promise<Group
   }
 
   return mapped;
+}
+
+export async function reverifyBrand(brandId: string): Promise<{ id: string; instagram_accounts_updated: number }> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const now = new Date().toISOString();
+
+  const { data: existing, error: existingError } = await db
+    .from("brands")
+    .select("id")
+    .eq("id", brandId)
+    .maybeSingle();
+  if (existingError) throw new ApiError(500, dbErrorMessage("brand lookup failed", existingError));
+  if (!existing) throw new ApiError(404, "Brand not found");
+
+  const { data: updatedAccounts, error: accountUpdateError } = await db
+    .from("instagram_accounts")
+    .update({
+      needs_review: true,
+      brand_id: null,
+      artist_id: null,
+      entity_ig_role: null,
+      entity_region_code: null,
+      updated_at: now,
+    })
+    .eq("brand_id", brandId)
+    .select("id");
+  if (accountUpdateError) {
+    throw new ApiError(500, dbErrorMessage("instagram_accounts brand reset failed", accountUpdateError));
+  }
+
+  const { error: deleteError } = await db.from("brands").delete().eq("id", brandId);
+  if (deleteError) throw new ApiError(500, dbErrorMessage("brand delete failed", deleteError));
+
+  return { id: brandId, instagram_accounts_updated: (updatedAccounts ?? []).length };
+}
+
+export async function reverifyArtist(
+  artistId: string,
+): Promise<{ id: string; instagram_accounts_updated: number }> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const now = new Date().toISOString();
+
+  const { data: existing, error: existingError } = await db
+    .from("artists")
+    .select("id")
+    .eq("id", artistId)
+    .maybeSingle();
+  if (existingError) throw new ApiError(500, dbErrorMessage("artist lookup failed", existingError));
+  if (!existing) throw new ApiError(404, "Artist not found");
+
+  const { data: updatedAccounts, error: accountUpdateError } = await db
+    .from("instagram_accounts")
+    .update({
+      needs_review: true,
+      brand_id: null,
+      artist_id: null,
+      entity_ig_role: null,
+      entity_region_code: null,
+      updated_at: now,
+    })
+    .eq("artist_id", artistId)
+    .select("id");
+  if (accountUpdateError) {
+    throw new ApiError(500, dbErrorMessage("instagram_accounts artist reset failed", accountUpdateError));
+  }
+
+  const { error: deleteError } = await db.from("artists").delete().eq("id", artistId);
+  if (deleteError) throw new ApiError(500, dbErrorMessage("artist delete failed", deleteError));
+
+  return { id: artistId, instagram_accounts_updated: (updatedAccounts ?? []).length };
 }
