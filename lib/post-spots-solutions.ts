@@ -229,6 +229,12 @@ export async function getPostSpotSolutionTree(postId: string): Promise<PostSpotS
   };
 }
 
+export async function deletePublicPostById(postId: string): Promise<void> {
+  const db = getServerSupabase() as any;
+  const { error } = await db.schema(APP_SCHEMA).from("posts").delete().eq("id", postId);
+  if (error) throw new ApiError(500, `delete post: ${error.message}`);
+}
+
 export async function deletePublicSpotById(spotId: string): Promise<void> {
   const db = getServerSupabase() as any;
   const { error } = await db.schema(APP_SCHEMA).from("spots").delete().eq("id", spotId);

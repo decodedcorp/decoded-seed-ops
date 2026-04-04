@@ -192,6 +192,29 @@ export function PostSpotsSolutionsDashboardClient() {
     [refreshTree],
   );
 
+  const deletePost = useCallback(async () => {
+    if (!selectedPostId) return;
+    if (
+      !window.confirm(
+        "이 post를 Dev DB public.posts 에서 삭제할까요?\nspots·solutions·magazine_posts·comments 등 FK CASCADE로 함께 제거됩니다. (복구 불가)",
+      )
+    ) {
+      return;
+    }
+    setActionError(null);
+    setMigrateOk(null);
+    try {
+      const res = await fetch(`/api/post-spots/posts/${selectedPostId}`, { method: "DELETE" });
+      const body = await res.json();
+      if (!res.ok || !body.ok) throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      setSelectedPostId(null);
+      setTree(null);
+      void loadPosts();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "post 삭제 실패");
+    }
+  }, [selectedPostId, loadPosts]);
+
   const migrateToProd = useCallback(async () => {
     if (!selectedPostId) return;
     if (
@@ -451,9 +474,21 @@ export function PostSpotsSolutionsDashboardClient() {
                   post_magazine_id: {tree.post.post_magazine_id ?? "—"} · magazine_posts 행:{" "}
                   {tree.post.magazine_post_link_count}
                 </p>
-                <div className="row" style={{ marginTop: 12, gap: 8 }}>
+                <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
                   <button type="button" disabled={migrating} onClick={() => void migrateToProd()}>
                     {migrating ? "Prod로 이전 중…" : "검수 완료 → Prod로 이전 (이 post 전부)"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={migrating}
+                    onClick={() => void deletePost()}
+                    style={{
+                      borderColor: "#b91c1c",
+                      color: "#b91c1c",
+                      background: "#fff",
+                    }}
+                  >
+                    Dev에서 이 post 삭제 (CASCADE)
                   </button>
                 </div>
               </div>
