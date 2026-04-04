@@ -12,6 +12,46 @@ export function BrandsTableClient({ initialBrands }: Props) {
   const [brands, setBrands] = useState(initialBrands);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addNameEn, setAddNameEn] = useState("");
+  const [addNameKo, setAddNameKo] = useState("");
+  const [addFile, setAddFile] = useState<File | null>(null);
+  const [addBusy, setAddBusy] = useState(false);
+
+  async function handleAddBrand() {
+    if (!addFile) {
+      setMessage("로고 이미지를 선택해 주세요.");
+      return;
+    }
+    if (!addNameEn.trim() && !addNameKo.trim()) {
+      setMessage("name_en 또는 name_ko 중 하나는 입력해 주세요.");
+      return;
+    }
+    setAddBusy(true);
+    setMessage(null);
+    try {
+      const fd = new FormData();
+      fd.append("name_en", addNameEn.trim());
+      fd.append("name_ko", addNameKo.trim());
+      fd.append("image", addFile);
+      const res = await fetch("/api/brands", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!json.ok) {
+        throw new Error(json.error?.message || "브랜드 추가에 실패했습니다.");
+      }
+      const row = json.data as BrandSummary;
+      setBrands((prev) => [row, ...prev]);
+      setAddNameEn("");
+      setAddNameKo("");
+      setAddFile(null);
+      setShowAdd(false);
+      setMessage("브랜드가 추가되었습니다.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setAddBusy(false);
+    }
+  }
 
   async function handleReverify(brandId: string) {
     setBusyId(brandId);
@@ -32,7 +72,63 @@ export function BrandsTableClient({ initialBrands }: Props) {
   }
 
   return (
-    <div className="review-table-scroll">
+    <div>
+      <div className="row" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <button type="button" onClick={() => setShowAdd((v) => !v)}>
+          {showAdd ? "추가 폼 닫기" : "브랜드 추가"}
+        </button>
+        {showAdd ? (
+          <span style={{ color: "#64748b", fontSize: 14 }}>로고 이미지 필수 (JPEG / PNG / WebP)</span>
+        ) : null}
+      </div>
+      {showAdd ? (
+        <div
+          className="row"
+          style={{
+            marginBottom: 16,
+            flexWrap: "wrap",
+            gap: 8,
+            alignItems: "flex-end",
+            padding: 12,
+            background: "#f8fafc",
+            borderRadius: 8,
+          }}
+        >
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#64748b" }}>name_en</span>
+            <input
+              className="review-input"
+              value={addNameEn}
+              disabled={addBusy}
+              onChange={(e) => setAddNameEn(e.target.value)}
+              placeholder="영문명"
+            />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#64748b" }}>name_ko</span>
+            <input
+              className="review-input"
+              value={addNameKo}
+              disabled={addBusy}
+              onChange={(e) => setAddNameKo(e.target.value)}
+              placeholder="한글명"
+            />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "#64748b" }}>로고 이미지</span>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              disabled={addBusy}
+              onChange={(e) => setAddFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+          <button type="button" disabled={addBusy} onClick={() => void handleAddBrand()}>
+            {addBusy ? "저장 중…" : "저장"}
+          </button>
+        </div>
+      ) : null}
+      <div className="review-table-scroll">
       <table className="review-table">
         <thead>
           <tr>
@@ -101,6 +197,7 @@ export function BrandsTableClient({ initialBrands }: Props) {
           )}
         </tbody>
       </table>
+      </div>
       {message ? <p className="review-feedback">{message}</p> : null}
     </div>
   );

@@ -97,3 +97,14 @@ export type GroupMembersByGroup = {
   group_label: string;
   members: GroupMemberSummary[];
 };
+
+export type GroupMemberAddGroupOption = {
+  id: string;
+  label: string;
+  group_username: string;
+};
+
+export type GroupMemberAddArtistOption = {
+  id: string;
+  label: string;
+};

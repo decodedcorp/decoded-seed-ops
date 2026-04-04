@@ -6,6 +6,8 @@ const serverEnvSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_DB_SCHEMA: z.string().min(1).default("warehouse"),
+  /** Public bucket for entity / IG profile images (e.g. `profile`) */
+  SUPABASE_PROFILE_BUCKET: z.string().min(1).default("profile"),
   CLOUDFLARE_R2_ACCOUNT_ID: z.string().min(1),
   CLOUDFLARE_R2_ACCESS_KEY_ID: z.string().min(1),
   CLOUDFLARE_R2_SECRET_ACCESS_KEY: z.string().min(1),

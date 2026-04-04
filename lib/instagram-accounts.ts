@@ -81,6 +81,65 @@ function groupDisplayName(account: RawGroupAccountRow): string {
   return account.display_name || account.name_en || account.name_ko || account.username || account.id;
 }
 
+const IG_USERNAME_RE = /^[a-zA-Z0-9._]{1,30}$/;
+
+export function normalizeInstagramUsername(raw: string): string {
+  const trimmed = raw.trim().replace(/^@+/, "");
+  return trimmed.toLowerCase();
+}
+
+/**
+ * 워크플로 백필 전용: username만 등록. needs_review=null 이므로 검수 대기 목록에는 나오지 않음.
+ * 백필로 name_en/name_ko/profile_image_url 채운 뒤 needs_review=true 가 되면 검수 큐에 표시됨.
+ */
+export async function registerPendingInstagramUsername(
+  rawUsername: string,
+): Promise<{ id: string; username: string }> {
+  const username = normalizeInstagramUsername(rawUsername);
+  if (!username) {
+    throw new ApiError(400, "Instagram username을 입력해 주세요.");
+  }
+  if (!IG_USERNAME_RE.test(username)) {
+    throw new ApiError(400, "유효하지 않은 Instagram username입니다. (영문/숫자/._ 최대 30자)");
+  }
+
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const now = new Date().toISOString();
+
+  const { data: existing, error: existingError } = await db
+    .from("instagram_accounts")
+    .select("id")
+    .eq("username", username)
+    .maybeSingle();
+  if (existingError) {
+    throw new ApiError(500, dbErrorMessage("instagram_accounts duplicate check failed", existingError));
+  }
+  if (existing?.id) {
+    throw new ApiError(409, "이미 등록된 Instagram username입니다.");
+  }
+
+  const { data: inserted, error: insertError } = await db
+    .from("instagram_accounts")
+    .insert({
+      username,
+      account_type: "other",
+      needs_review: null,
+      is_active: true,
+      updated_at: now,
+    })
+    .select("id,username")
+    .single();
+
+  if (insertError) {
+    throw new ApiError(500, dbErrorMessage("instagram_accounts insert failed", insertError));
+  }
+
+  const row = inserted as { id: string; username: string };
+  return { id: row.id, username: row.username };
+}
+
 export async function getApprovedGroupOptions(): Promise<GroupOption[]> {
   const dbSupabase = getServerSupabase() as any;
   const env = getServerEnv();

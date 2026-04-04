@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
+
 import { getServerEnv } from "@/lib/env";
 import { ApiError } from "@/lib/errors";
+import { uploadEntityProfileToSupabaseStorage } from "@/lib/storage/supabase-profile";
 import { getServerSupabase } from "@/lib/supabase/server";
+import { extFromMimeType } from "@/lib/utils";
 import type {
   ArtistSummary,
   BrandSummary,
+  GroupMemberAddArtistOption,
+  GroupMemberAddGroupOption,
   GroupMemberSummary,
   GroupMembersByGroup,
 } from "@/types";
@@ -45,6 +51,119 @@ type RawGroupMemberRow = {
   artist_id: string;
   is_active: boolean | null;
 };
+
+type EligibleGroupRow = {
+  id: string;
+  group_username: string;
+  group_label: string;
+  primary_instagram_account_id: string;
+};
+
+async function fetchEligibleGroupRows(db: any): Promise<EligibleGroupRow[]> {
+  const { data: groupsData, error: groupsError } = await db
+    .from("groups")
+    .select("id,name_en,name_ko,primary_instagram_account_id")
+    .order("updated_at", { ascending: false });
+  if (groupsError) {
+    throw new ApiError(500, dbErrorMessage("groups query failed", groupsError));
+  }
+
+  const groupsRaw = (groupsData ?? []) as Array<{
+    id: string;
+    name_en: string | null;
+    name_ko: string | null;
+    primary_instagram_account_id: string | null;
+  }>;
+  const primaryAccountIds = groupsRaw
+    .map((row) => row.primary_instagram_account_id)
+    .filter((value): value is string => Boolean(value));
+  const primaryAccountsMap = await getAccountMapByIds(db, primaryAccountIds);
+
+  const groups = groupsRaw
+    .map((row) => {
+      const primaryAccount = row.primary_instagram_account_id
+        ? primaryAccountsMap.get(row.primary_instagram_account_id)
+        : undefined;
+      if (!primaryAccount) return null;
+      if (
+        primaryAccount.account_type !== "group" ||
+        !primaryAccount.id ||
+        !primaryAccount.username
+      ) {
+        return null;
+      }
+      return {
+        id: row.id,
+        group_username: primaryAccount.username,
+        group_label: row.name_en || row.name_ko || accountLabel(primaryAccount) || row.id,
+        primary_instagram_account_id: primaryAccount.id,
+      };
+    })
+    .filter(
+      (
+        value,
+      ): value is {
+        id: string;
+        group_username: string;
+        group_label: string;
+        primary_instagram_account_id: string;
+      } => Boolean(value),
+    );
+
+  if (!groups.length) return [];
+
+  const validPrimaryIds = groups.map((group) => group.primary_instagram_account_id);
+  const { data: validPrimaryRows, error: primaryFilterError } = await db
+    .from("instagram_accounts")
+    .select("id,needs_review,entity_ig_role,account_type,is_active")
+    .in("id", validPrimaryIds)
+    .eq("account_type", "group")
+    .eq("needs_review", false)
+    .eq("entity_ig_role", "primary")
+    .eq("is_active", true);
+  if (primaryFilterError) {
+    throw new ApiError(500, dbErrorMessage("primary group account filter failed", primaryFilterError));
+  }
+  const validPrimarySet = new Set(((validPrimaryRows ?? []) as Array<{ id: string }>).map((row) => row.id));
+  return groups.filter((group) => validPrimarySet.has(group.primary_instagram_account_id));
+}
+
+async function assertGroupEligibleForMemberAdd(db: any, groupId: string): Promise<void> {
+  const { data: group, error: groupError } = await db
+    .from("groups")
+    .select("id,name_en,name_ko,primary_instagram_account_id")
+    .eq("id", groupId)
+    .maybeSingle();
+  if (groupError) {
+    throw new ApiError(500, dbErrorMessage("groups lookup failed", groupError));
+  }
+  if (!group?.primary_instagram_account_id) {
+    throw new ApiError(400, "그룹에 승인된 대표 Instagram 계정이 없습니다.");
+  }
+
+  const { data: ig, error: igError } = await db
+    .from("instagram_accounts")
+    .select("id,username,account_type,needs_review,entity_ig_role,is_active")
+    .eq("id", group.primary_instagram_account_id)
+    .maybeSingle();
+  if (igError) {
+    throw new ApiError(500, dbErrorMessage("instagram_accounts lookup failed", igError));
+  }
+
+  if (
+    !ig ||
+    ig.account_type !== "group" ||
+    ig.needs_review !== false ||
+    ig.entity_ig_role !== "primary" ||
+    ig.is_active !== true ||
+    !ig.username
+  ) {
+    throw new ApiError(
+      400,
+      "이 그룹에는 멤버를 추가할 수 없습니다. 대표 계정이 검수 완료·활성 상태인지 확인하세요.",
+    );
+  }
+}
 
 function dbErrorMessage(context: string, error: DbErrorLike): string {
   const parts = [
@@ -89,6 +208,142 @@ async function getAccountMapByIds(db: any, ids: string[]): Promise<Map<string, R
     rows.push(...((data ?? []) as RawInstagramAccountLite[]));
   }
   return new Map(rows.map((row) => [row.id, row]));
+}
+
+const ENTITY_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_ENTITY_IMAGE_BYTES = 8 * 1024 * 1024;
+
+export async function createManualBrand(input: {
+  nameEn: string | null;
+  nameKo: string | null;
+  imageBuffer: Buffer;
+  contentType: string;
+}): Promise<BrandSummary> {
+  const nameEn = input.nameEn?.trim() || null;
+  const nameKo = input.nameKo?.trim() || null;
+  if (!nameEn && !nameKo) {
+    throw new ApiError(400, "name_en 또는 name_ko 중 하나는 필요합니다.");
+  }
+  if (!ENTITY_IMAGE_MIME.has(input.contentType)) {
+    throw new ApiError(400, "로고 이미지는 JPEG, PNG, WebP만 허용됩니다.");
+  }
+  if (input.imageBuffer.byteLength === 0) {
+    throw new ApiError(400, "이미지 파일이 비어 있습니다.");
+  }
+  if (input.imageBuffer.byteLength > MAX_ENTITY_IMAGE_BYTES) {
+    throw new ApiError(400, "이미지 크기는 8MB 이하여야 합니다.");
+  }
+
+  const env = getServerEnv();
+  const dbSupabase = getServerSupabase() as any;
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const id = randomUUID();
+  const ext = extFromMimeType(input.contentType);
+  const publicUrl = await uploadEntityProfileToSupabaseStorage({
+    kind: "brand",
+    entityId: id,
+    ext,
+    buffer: input.imageBuffer,
+    contentType: input.contentType,
+  });
+  const now = new Date().toISOString();
+
+  const { data, error } = await db
+    .from("brands")
+    .insert({
+      id,
+      name_en: nameEn,
+      name_ko: nameKo,
+      logo_image_url: publicUrl,
+      primary_instagram_account_id: null,
+      updated_at: now,
+    })
+    .select("id,name_en,name_ko,logo_image_url,primary_instagram_account_id,created_at,updated_at")
+    .single();
+
+  if (error) {
+    throw new ApiError(500, dbErrorMessage("brands insert failed", error));
+  }
+
+  const row = data as RawBrandRow;
+  return {
+    id: row.id,
+    name_en: row.name_en,
+    name_ko: row.name_ko,
+    logo_image_url: row.logo_image_url,
+    primary_instagram_account_id: row.primary_instagram_account_id,
+    primary_account_username: null,
+    primary_account_label: null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function createManualArtist(input: {
+  nameEn: string | null;
+  nameKo: string | null;
+  imageBuffer: Buffer;
+  contentType: string;
+}): Promise<ArtistSummary> {
+  const nameEn = input.nameEn?.trim() || null;
+  const nameKo = input.nameKo?.trim() || null;
+  if (!nameEn && !nameKo) {
+    throw new ApiError(400, "name_en 또는 name_ko 중 하나는 필요합니다.");
+  }
+  if (!ENTITY_IMAGE_MIME.has(input.contentType)) {
+    throw new ApiError(400, "프로필 이미지는 JPEG, PNG, WebP만 허용됩니다.");
+  }
+  if (input.imageBuffer.byteLength === 0) {
+    throw new ApiError(400, "이미지 파일이 비어 있습니다.");
+  }
+  if (input.imageBuffer.byteLength > MAX_ENTITY_IMAGE_BYTES) {
+    throw new ApiError(400, "이미지 크기는 8MB 이하여야 합니다.");
+  }
+
+  const env = getServerEnv();
+  const dbSupabase = getServerSupabase() as any;
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const id = randomUUID();
+  const ext = extFromMimeType(input.contentType);
+  const publicUrl = await uploadEntityProfileToSupabaseStorage({
+    kind: "artist",
+    entityId: id,
+    ext,
+    buffer: input.imageBuffer,
+    contentType: input.contentType,
+  });
+  const now = new Date().toISOString();
+
+  const { data, error } = await db
+    .from("artists")
+    .insert({
+      id,
+      name_en: nameEn,
+      name_ko: nameKo,
+      profile_image_url: publicUrl,
+      primary_instagram_account_id: null,
+      updated_at: now,
+    })
+    .select("id,name_en,name_ko,profile_image_url,primary_instagram_account_id,created_at,updated_at")
+    .single();
+
+  if (error) {
+    throw new ApiError(500, dbErrorMessage("artists insert failed", error));
+  }
+
+  const row = data as RawArtistRow;
+  return {
+    id: row.id,
+    name_en: row.name_en,
+    name_ko: row.name_ko,
+    profile_image_url: row.profile_image_url,
+    primary_instagram_account_id: row.primary_instagram_account_id,
+    primary_account_username: null,
+    primary_account_label: null,
+    group_names: [],
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 export async function getBrandsSummary(searchTerm?: string): Promise<BrandSummary[]> {
@@ -225,74 +480,7 @@ export async function getGroupMembersByGroup(searchTerm?: string): Promise<Group
   const env = getServerEnv();
   const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
 
-  const { data: groupsData, error: groupsError } = await db
-    .from("groups")
-    .select("id,name_en,name_ko,primary_instagram_account_id")
-    .order("updated_at", { ascending: false });
-  if (groupsError) {
-    throw new ApiError(500, dbErrorMessage("groups query failed", groupsError));
-  }
-
-  const groupsRaw = (groupsData ?? []) as Array<{
-    id: string;
-    name_en: string | null;
-    name_ko: string | null;
-    primary_instagram_account_id: string | null;
-  }>;
-  const primaryAccountIds = groupsRaw
-    .map((row) => row.primary_instagram_account_id)
-    .filter((value): value is string => Boolean(value));
-  const primaryAccountsMap = await getAccountMapByIds(db, primaryAccountIds);
-
-  const groups = groupsRaw
-    .map((row) => {
-      const primaryAccount = row.primary_instagram_account_id
-        ? primaryAccountsMap.get(row.primary_instagram_account_id)
-        : undefined;
-      if (!primaryAccount) return null;
-      if (
-        primaryAccount.account_type !== "group" ||
-        !primaryAccount.id ||
-        !primaryAccount.username
-      ) {
-        return null;
-      }
-      return {
-        id: row.id,
-        group_username: primaryAccount.username,
-        group_label: row.name_en || row.name_ko || accountLabel(primaryAccount) || row.id,
-        primary_instagram_account_id: primaryAccount.id,
-      };
-    })
-    .filter(
-      (
-        value,
-      ): value is {
-        id: string;
-        group_username: string;
-        group_label: string;
-        primary_instagram_account_id: string;
-      } => Boolean(value),
-    );
-
-  if (!groups.length) return [];
-
-  const validPrimaryIds = groups.map((group) => group.primary_instagram_account_id);
-  const { data: validPrimaryRows, error: primaryFilterError } = await db
-    .from("instagram_accounts")
-    .select("id,needs_review,entity_ig_role,account_type,is_active")
-    .in("id", validPrimaryIds)
-    .eq("account_type", "group")
-    .eq("needs_review", false)
-    .eq("entity_ig_role", "primary")
-    .eq("is_active", true);
-  if (primaryFilterError) {
-    throw new ApiError(500, dbErrorMessage("primary group account filter failed", primaryFilterError));
-  }
-  const validPrimarySet = new Set(((validPrimaryRows ?? []) as Array<{ id: string }>).map((row) => row.id));
-  const filteredGroups = groups.filter((group) => {
-    return validPrimarySet.has(group.primary_instagram_account_id);
-  });
+  const filteredGroups = await fetchEligibleGroupRows(db);
   if (!filteredGroups.length) return [];
 
   const groupIds = filteredGroups.map((group) => group.id);
@@ -372,6 +560,113 @@ export async function getGroupMembersByGroup(searchTerm?: string): Promise<Group
   }
 
   return mapped;
+}
+
+export async function listEligibleGroupsForMemberAdd(): Promise<GroupMemberAddGroupOption[]> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+  const rows = await fetchEligibleGroupRows(db);
+  return rows.map((g) => ({
+    id: g.id,
+    label: g.group_label,
+    group_username: g.group_username,
+  }));
+}
+
+export async function getArtistPickOptionsForGroupMember(): Promise<GroupMemberAddArtistOption[]> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+
+  const { data, error } = await db
+    .from("artists")
+    .select("id,name_en,name_ko,primary_instagram_account_id")
+    .order("updated_at", { ascending: false });
+  if (error) {
+    throw new ApiError(500, dbErrorMessage("artists list for picker failed", error));
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    name_en: string | null;
+    name_ko: string | null;
+    primary_instagram_account_id: string | null;
+  }>;
+  const primaryIds = rows
+    .map((row) => row.primary_instagram_account_id)
+    .filter((value): value is string => Boolean(value));
+  const accountById = await getAccountMapByIds(db, primaryIds);
+
+  return rows.map((row) => {
+    const primary = row.primary_instagram_account_id
+      ? accountById.get(row.primary_instagram_account_id)
+      : undefined;
+    const label =
+      [row.name_en, row.name_ko].filter(Boolean).join(" · ") ||
+      primary?.username ||
+      primary?.display_name ||
+      row.id;
+    return { id: row.id, label };
+  });
+}
+
+export async function addGroupMember(
+  groupId: string,
+  artistId: string,
+): Promise<{ group_id: string; member: GroupMemberSummary }> {
+  const dbSupabase = getServerSupabase() as any;
+  const env = getServerEnv();
+  const db = dbSupabase.schema(env.SUPABASE_DB_SCHEMA);
+
+  await assertGroupEligibleForMemberAdd(db, groupId);
+
+  const { data: artistRow, error: artistError } = await db
+    .from("artists")
+    .select("id,name_en,name_ko,profile_image_url,primary_instagram_account_id")
+    .eq("id", artistId)
+    .maybeSingle();
+  if (artistError) {
+    throw new ApiError(500, dbErrorMessage("artist lookup failed", artistError));
+  }
+  if (!artistRow) {
+    throw new ApiError(404, "아티스트를 찾을 수 없습니다.");
+  }
+
+  const now = new Date().toISOString();
+  const { error: upsertError } = await db.from("group_members").upsert(
+    {
+      group_id: groupId,
+      artist_id: artistId,
+      is_active: true,
+      updated_at: now,
+    },
+    { onConflict: "group_id,artist_id" },
+  );
+  if (upsertError) {
+    throw new ApiError(500, dbErrorMessage("group_members upsert failed", upsertError));
+  }
+
+  const artist = artistRow as RawArtistRow;
+  const artistPrimaryById = await getAccountMapByIds(
+    db,
+    artist.primary_instagram_account_id ? [artist.primary_instagram_account_id] : [],
+  );
+  const primary = artist.primary_instagram_account_id
+    ? artistPrimaryById.get(artist.primary_instagram_account_id)
+    : undefined;
+
+  const member: GroupMemberSummary = {
+    id: artist.id,
+    username: primary?.username ?? null,
+    display_name: primary?.display_name ?? null,
+    name_en: artist.name_en ?? null,
+    name_ko: artist.name_ko ?? null,
+    account_type: "artist",
+    profile_image_url: artist.profile_image_url ?? null,
+  };
+
+  return { group_id: groupId, member };
 }
 
 export async function reverifyBrand(brandId: string): Promise<{ id: string; instagram_accounts_updated: number }> {

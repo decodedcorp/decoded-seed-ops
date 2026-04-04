@@ -27,6 +27,8 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
   const [accounts, setAccounts] = useState(initialAccounts);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [newUsername, setNewUsername] = useState("");
+  const [registerBusy, setRegisterBusy] = useState(false);
 
   function updateAccountField(
     accountId: string,
@@ -56,6 +58,35 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
         return { ...account, entity_ig_role: value as EntityIgRoleValue };
       }),
     );
+  }
+
+  async function handleRegisterUsername() {
+    const trimmed = newUsername.trim();
+    if (!trimmed) {
+      setMessage("Instagram username을 입력해 주세요.");
+      return;
+    }
+    setRegisterBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/instagram-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: trimmed }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        throw new Error(json.error?.message || "등록에 실패했습니다.");
+      }
+      setNewUsername("");
+      setMessage(
+        `계정 @${json.data.username} 이(가) 등록되었습니다. 백필이 끝나면 검수 대기 목록에 표시됩니다.`,
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setRegisterBusy(false);
+    }
   }
 
   async function handleApprove(accountId: string) {
@@ -94,10 +125,41 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
     }
   }
 
+  const registerPanel = (
+    <div
+      className="row"
+      style={{
+        marginBottom: 16,
+        flexWrap: "wrap",
+        gap: 8,
+        alignItems: "center",
+      }}
+    >
+      <span style={{ color: "#475569", fontSize: 14 }}>
+        Instagram 계정만 등록 (워크플로 백필 → 정보가 채워진 뒤 아래 검수 대기에 표시)
+      </span>
+      <input
+        value={newUsername}
+        disabled={registerBusy}
+        onChange={(event) => setNewUsername(event.target.value)}
+        placeholder="username (@ 없이)"
+        className="review-input"
+        style={{ minWidth: 200 }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void handleRegisterUsername();
+        }}
+      />
+      <button type="button" disabled={registerBusy} onClick={() => void handleRegisterUsername()}>
+        {registerBusy ? "등록 중…" : "계정 추가"}
+      </button>
+    </div>
+  );
+
   if (accounts.length === 0) {
     return (
-      <div className="card review-empty-card">
-        <p>검수 대기중인 instagram account가 없습니다.</p>
+      <div className="card review-table-card">
+        {registerPanel}
+        <p style={{ margin: "8px 0 0 0", color: "#64748b" }}>검수 대기중인 instagram account가 없습니다.</p>
         {message ? <p className="review-feedback">{message}</p> : null}
       </div>
     );
@@ -105,6 +167,7 @@ export function InstagramReviewTable({ initialAccounts, groupOptions }: Props) {
 
   return (
     <div className="card review-table-card">
+      {registerPanel}
       <div className="review-table-scroll">
         <table className="review-table">
         <thead>

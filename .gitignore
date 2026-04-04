@@ -36,3 +36,10 @@ yarn-error.log*
 next-env.d.ts
 
 .env.local
+
+# DB dumps (PII / secrets — never commit)
+auth-migration.sql
+auth-migration-data-only.sql
+auth-migration-*.sql
+auth-users-migration-*.sql
+warehouse-migration*.sql

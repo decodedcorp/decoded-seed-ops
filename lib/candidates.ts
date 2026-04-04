@@ -4,7 +4,7 @@ import { ApiError } from "@/lib/errors";
 import { getServerEnv } from "@/lib/env";
 import { uploadBufferToR2 } from "@/lib/storage/r2";
 import { getServerSupabase } from "@/lib/supabase/server";
-import { getDomainFromUrl, sanitizeFileName } from "@/lib/utils";
+import { extFromMimeType, getDomainFromUrl, sanitizeFileName } from "@/lib/utils";
 import type { AlternativeImage, GroupArtistOptions, SeedLook, SeedPostStatus } from "@/types";
 
 type RawPost = {
@@ -137,15 +137,6 @@ function chunkArray<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(i, i + size));
   }
   return chunks;
-}
-
-function extFromMimeType(mimeType: string | null): string {
-  if (!mimeType) return "bin";
-  if (mimeType.includes("jpeg")) return "jpg";
-  if (mimeType.includes("png")) return "png";
-  if (mimeType.includes("webp")) return "webp";
-  if (mimeType.includes("gif")) return "gif";
-  return "bin";
 }
 
 function accountDisplayName(account: RawInstagramAccount): string | null {

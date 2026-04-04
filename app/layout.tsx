@@ -16,6 +16,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/candidates" className="navbar-link">
               Post 대표 이미지 선택
             </Link>
+            <Link href="/post-images" className="navbar-link">
+              Public posts 중복 점검
+            </Link>
+            <Link href="/post-spots" className="navbar-link">
+              Spots / Solutions
+            </Link>
             <Link href="/review" className="navbar-link">
               Instagram Account 검증
             </Link>
